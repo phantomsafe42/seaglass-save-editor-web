@@ -10,6 +10,10 @@ const PARTY_OFF = 0x238;
 const PC_ITEMS_OFF = 0x498;
 const BAG_ITEMS_OFF = 0x560;
 const BAG_BALLS_OFF = 0x740;
+const BAG_POCKETS = new Map<number, readonly [number, number]>([
+  [1, [0x560, 60]], [2, [0x740, 20]], [3, [0x790, 70]], [4, [0x8a8, 68]], [5, [0x650, 60]],
+]);
+const FLAGS_OFF = 0x13c0;
 const KEY_OFF = 0xac;
 const ITEM_BASE = 0x67e77c;
 const ITEM_STRIDE = 0x54;
@@ -19,9 +23,24 @@ const MOVE_PTR_1 = 0x6d2a18;
 const MOVE_STRIDE = 0x38;
 const ABILITY_BASE = 0x6e15b0;
 const ABILITY_STRIDE = 0x1c;
+const EXPERIENCE_MASK = 0x1fffff;
+const EXPERIENCE_UPPER_MASK = 0xffe00000;
+const EMPTY_EXTENDED_NICKNAME = 0x1fe00000;
+const LEVEL_CAPS = [[0x867, 15], [0x868, 19], [0x869, 24], [0x86a, 29], [0x86b, 31], [0x86c, 33], [0x86d, 42], [0x86e, 46], [0x87f, 58]] as const;
 const SUBSTRUCT_ORDER = ["GAEM","GAME","GEAM","GEMA","GMAE","GMEA","AGEM","AGME","AEGM","AEMG","AMGE","AMEG","EGAM","EGMA","EAGM","EAMG","EMGA","EMAG","MGAE","MGEA","MAGE","MAEG","MEGA","MEAG"];
-const STAT_KEYS = ["hp", "atk", "def", "spe", "spa", "spd"];
 const NATURE_MOD = Array.from({ length: 25 }, (_, n) => [Math.floor(n / 5), n % 5]);
+const SEAGLASS_TM_IDS = Array.from({ length: 60 }, (_, index) => 582 + index);
+const SEAGLASS_BERRY_IDS = Array.from({ length: 68 }, (_, index) => 514 + index);
+const SEAGLASS_Z_CRYSTAL_IDS = Array.from({ length: 35 }, (_, index) => 357 + index);
+const MACHINE_MOVE_NAMES = [
+  "Focus Punch", "Dragon Claw", "Water Pulse", "Calm Mind", "Roar", "Toxic", "Hail", "Bulk Up", "Bullet Seed", "Hidden Power",
+  "Sunny Day", "Taunt", "Ice Beam", "Blizzard", "Hyper Beam", "Light Screen", "Protect", "Rain Dance", "Giga Drain", "Safeguard",
+  "Frustration", "Solar Beam", "Iron Tail", "Thunderbolt", "Thunder", "Earthquake", "Return", "Dig", "Psychic", "Shadow Ball",
+  "Brick Break", "Double Team", "Reflect", "Shock Wave", "Flamethrower", "Sludge Bomb", "Sandstorm", "Fire Blast", "Rock Tomb", "Aerial Ace",
+  "Torment", "Facade", "Secret Power", "Rest", "Attract", "Thief", "Steel Wing", "Skill Swap", "Snatch", "Overheat",
+  "Poison Fang", "Thunder Fang", "Ice Fang", "Fire Fang", "Psychic Fangs", "Stomping Tantrum", "Dazzling Gleam", "Play Rough", "Volt Switch", "U-turn",
+  "Cut", "Fly", "Surf", "Strength", "Flash", "Rock Smash", "Waterfall", "Dive",
+] as const;
 
 const CHARS = new Map<number, string>([[0," "],[0xae,"-"],[0xad,"."],[0xba,"/"],[0xab,"!"],[0xac,"?"],[0xb4,"'"],[0x1b,"é"]]);
 for (let i = 0; i < 10; i++) CHARS.set(0xa1 + i, String(i));
@@ -72,17 +91,28 @@ function legalEvs(values: number[]) {
 
 export type Pocket = "items" | "balls";
 export type EditableItem = { id: number; name: string; pocket: Pocket };
+export type AbilitySlot = 0 | 1 | 2;
 export type NewPokemon = {
   species: number; nickname: string; level: number; nature: number;
-  gender: "M" | "F" | "N"; shiny: boolean; abilitySlot: 0 | 1;
-  heldItem: number; friendship: number; moves: number[]; pp: number[];
-  ivs: number[]; evs: number[];
+  gender: "M" | "F" | "N"; shiny: boolean; abilitySlot: AbilitySlot;
+  heldItem: number; friendship: number; moves: number[]; pp: number[]; ppUps: number[];
+  ivs: number[]; evs: number[]; contest: number[]; sheen: number;
+  returnedHeldItem?: number; experience?: number; makePartyRoom?: boolean; evolutionMethod?: number;
 };
 export type PokemonLocation = { kind: "party"; index: number } | { kind: "box"; index: number };
 export type PokemonRecord = NewPokemon & {
   location: PokemonLocation; otName: string; isEgg: boolean;
 };
 export type SpriteData = { width: number; height: number; pixels: Uint8ClampedArray };
+export type EvolutionSummary = { text: string; canEvolve: boolean };
+export type EvolutionFulfillment =
+  | { kind: "level"; level: number; experience: number }
+  | { kind: "heldItem"; item: number }
+  | { kind: "friendship"; value: number; experience: number }
+  | { kind: "beauty"; value: number; experience: number }
+  | { kind: "move"; move: number; experience: number }
+  | { kind: "stats"; relation: "higher" | "equal" | "lower"; level: number; experience: number };
+export type EvolutionOption = { text: string; choiceLabel: string; target: number; method: number; status: "unmet" | "will" | "can"; fulfillment?: EvolutionFulfillment };
 
 export class SeaglassWebSave {
   data: Uint8Array;
@@ -145,10 +175,115 @@ export class SeaglassWebSave {
   genderRatio(id: number) { return this.rom[SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c + 0x12]; }
   baseFriendship(id: number) { return this.rom[SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c + 0x14]; }
   growthRate(id: number) { return this.rom[SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c + 0x15]; }
+  experienceAtLevel(species: number, level: number) { return expAt(this.growthRate(species), clampInteger(level, 1, 100)); }
+  experienceBeforeLevel(species: number, level: number) { return Math.max(0, expAt(this.growthRate(species), clampInteger(level, 1, 100)) - 1); }
   abilityName(id: number) { if (!id) return "(none)"; return decodeString(this.rom.subarray(ABILITY_BASE + id * ABILITY_STRIDE, ABILITY_BASE + id * ABILITY_STRIDE + 13)) || `Ability ${id}`; }
-  speciesAbilities(id: number) { const off = SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c + 0x18; const first = u16(this.rom, off), second = u16(this.rom, off + 2); return [{ slot: 0 as const, id: first, name: this.abilityName(first) }, ...(second && second !== first ? [{ slot: 1 as const, id: second, name: this.abilityName(second) }] : [])]; }
+  speciesAbilities(id: number) {
+    const off = SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c + 0x18;
+    return ([0, 1, 2] as AbilitySlot[]).map(slot => {
+      const abilityId = u16(this.rom, off + slot * 2);
+      return { slot, id: abilityId, name: this.abilityName(abilityId), hidden: slot === 2 };
+    }).filter(ability => ability.id !== 0);
+  }
   moveName(id: number) { if (!id) return "—"; const ptr = u32(this.rom, MOVE_PTR_1 + (id - 1) * MOVE_STRIDE); if (ptr < 0x08000000 || ptr >= 0x0a000000) return `Move ${id}`; return decodeString(this.rom.subarray(ptr - 0x08000000, ptr - 0x08000000 + 16)) || `Move ${id}`; }
-  moveList() { const result = [{ id: 0, name: "—" }]; for (let id = 1; id < 1000; id++) { const name = this.moveName(id); if (!name.startsWith("Move ") && /[A-Za-z0-9]/.test(name)) result.push({ id, name }); } return result; }
+  movePp(id: number) { if (!id) return 0; const off = MOVE_PTR_1 + (id - 1) * MOVE_STRIDE + 0x0e; return off < this.rom.length ? this.rom[off] : 0; }
+  moveMaxPp(id: number, ppUps: number) { const base = this.movePp(id), uses = clampInteger(ppUps, 0, 3); return base + Math.floor(base * uses / 5); }
+  moveList() {
+    const result = [];
+    for (let id = 1; id < 1000; id++) {
+      const name = this.moveName(id);
+      if (!name.startsWith("Move ") && /[A-Za-z0-9]/.test(name)) result.push({ id, name, pp: this.movePp(id) });
+    }
+    return result.sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }) || a.id - b.id);
+  }
+  speciesMovepool(id: number) {
+    const groups = this.speciesMoveGroups(id), result = new Set<number>();
+    for (const moves of Object.values(groups)) for (const move of moves) result.add(move);
+    return result;
+  }
+  speciesMoveGroups(id: number) {
+    const levelUp = new Set<number>(), teachable = new Set<number>(), egg = new Set<number>(), base = SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c;
+    const romOffset = (field: number) => {
+      if (field < 0 || field + 4 > this.rom.length) return -1;
+      const pointer = u32(this.rom, field);
+      return pointer >= 0x08000000 && pointer - 0x08000000 < this.rom.length ? pointer - 0x08000000 : -1;
+    };
+    let cursor = romOffset(base + 0x8c);
+    for (let count = 0; cursor >= 0 && cursor + 4 <= this.rom.length && count < 256; count++, cursor += 4) {
+      const move = u16(this.rom, cursor); if (move === 0xffff) break; if (move > 0 && move < 1000) levelUp.add(move);
+    }
+    cursor = romOffset(base + 0x90);
+    for (let count = 0; cursor >= 0 && cursor + 2 <= this.rom.length && count < 2048; count++, cursor += 2) {
+      const move = u16(this.rom, cursor); if (move === 0xffff) break; if (move > 0 && move < 1000) teachable.add(move);
+    }
+    cursor = romOffset(base + 0x94);
+    for (let count = 0; cursor >= 0 && cursor + 2 <= this.rom.length && count < 2048; count++, cursor += 2) {
+      const move = u16(this.rom, cursor); if (move === 0xffff) break; if (move > 0 && move < 1000) egg.add(move);
+    }
+    const byName = new Map(this.moveList().map(move => [move.name, move.id])), machineIds = new Set(MACHINE_MOVE_NAMES.map(name => byName.get(name)).filter((move): move is number => move != null));
+    const machine = new Set([...teachable].filter(move => machineIds.has(move))), tutor = new Set([...teachable].filter(move => !machineIds.has(move)));
+    return { levelUp, machine, tutor, egg };
+  }
+  evolutionOptions(draft: Pick<NewPokemon, "species" | "level" | "gender" | "heldItem" | "friendship" | "moves" | "ivs" | "evs" | "nature" | "contest" | "experience" | "makePartyRoom">): EvolutionOption[] {
+    const base = SPECIES_NAME_1 + (draft.species - 1) * SPECIES_STRIDE - 0x2c;
+    const pointer = u32(this.rom, base + 0x98);
+    if (pointer < 0x08000000 || pointer - 0x08000000 >= this.rom.length) return [];
+    const entries: { method: number; param: number; target: number }[] = [];
+    for (let cursor = pointer - 0x08000000, count = 0; cursor + 8 <= this.rom.length && count < 16; cursor += 8, count++) {
+      const method = u16(this.rom, cursor);
+      if (method === 0xffff) break;
+      if (method !== 0xfffe) entries.push({ method, param: u16(this.rom, cursor + 2), target: u16(this.rom, cursor + 4) });
+    }
+    if (!entries.length) return [];
+
+    const usableEntries = entries.filter(entry => ![5, 6, 14, 25].includes(entry.method));
+    const hasMultipleTargets = new Set(usableEntries.map(entry => entry.target)).size > 1;
+    const stat = (index: number) => {
+      const level = clampInteger(draft.level, 1, 100), iv = clampInteger(draft.ivs[index] ?? 0, 0, 31), ev = clampInteger(draft.evs[index] ?? 0, 0, 252);
+      let value = Math.floor((2 * this.baseStats(draft.species)[index] + iv + Math.floor(ev / 4)) * level / 100) + 5;
+      const [boost, lower] = NATURE_MOD[clampInteger(draft.nature, 0, 24)];
+      if (boost !== lower) value = index - 1 === boost ? Math.floor(value * 1.1) : index - 1 === lower ? Math.floor(value * .9) : value;
+      return value;
+    };
+    const partyHas = (species: number) => this.partyPokemon().some(pokemon => pokemon.species === species);
+    const describe = (method: number, param: number): { condition: string; choiceLabel: string; status: EvolutionOption["status"]; fulfillment?: EvolutionFulfillment } => {
+      const item = this.itemName(param), move = this.moveName(param), level = clampInteger(draft.level, 1, 100);
+      const onePointBefore = (targetLevel: number) => draft.experience === this.experienceBeforeLevel(draft.species, targetLevel);
+      const nextLevelExperience = this.experienceBeforeLevel(draft.species, Math.min(100, level + 1));
+      switch (method) {
+        case 1: return { condition: "with high friendship", choiceLabel: "Max Friendship", status: draft.friendship >= 220 && level < 100 && onePointBefore(level + 1) ? "will" : "unmet", fulfillment: { kind: "friendship", value: 255, experience: nextLevelExperience } } as const;
+        case 4: return { condition: `at Lv. ${param}`, choiceLabel: `Level ${param}`, status: level >= param ? "can" : level === param - 1 && onePointBefore(param) ? "will" : "unmet", fulfillment: { kind: "level", level: Math.max(1, param - 1), experience: this.experienceBeforeLevel(draft.species, param) } } as const;
+        case 5: return { condition: "using Linking Cord", choiceLabel: "Linking Cord", status: draft.heldItem === 796 ? "can" : "unmet", fulfillment: { kind: "heldItem", item: 796 } } as const;
+        case 6:
+        case 7: return { condition: `using ${item}`, choiceLabel: item, status: draft.heldItem === param ? "can" : "unmet", fulfillment: { kind: "heldItem", item: param } } as const;
+        case 8: return { condition: `at Lv. ${param} with Attack higher than Defense`, choiceLabel: "Attack > Defense", status: level >= param && stat(1) > stat(2) ? "can" : level === param - 1 && onePointBefore(param) && stat(1) > stat(2) ? "will" : "unmet", fulfillment: { kind: "stats", relation: "higher", level: Math.max(1, param - 1), experience: this.experienceBeforeLevel(draft.species, param) } } as const;
+        case 9: return { condition: `at Lv. ${param} with equal Attack and Defense`, choiceLabel: "Attack = Defense", status: level >= param && stat(1) === stat(2) ? "can" : level === param - 1 && onePointBefore(param) && stat(1) === stat(2) ? "will" : "unmet", fulfillment: { kind: "stats", relation: "equal", level: Math.max(1, param - 1), experience: this.experienceBeforeLevel(draft.species, param) } } as const;
+        case 10: return { condition: `at Lv. ${param} with Attack lower than Defense`, choiceLabel: "Attack < Defense", status: level >= param && stat(1) < stat(2) ? "can" : level === param - 1 && onePointBefore(param) && stat(1) < stat(2) ? "will" : "unmet", fulfillment: { kind: "stats", relation: "lower", level: Math.max(1, param - 1), experience: this.experienceBeforeLevel(draft.species, param) } } as const;
+        case 11:
+        case 12: return { condition: `at Lv. ${param} (personality-dependent)`, choiceLabel: "Personality-dependent", status: level >= param ? "can" : level === param - 1 && onePointBefore(param) ? "will" : "unmet", fulfillment: { kind: "level", level: Math.max(1, param - 1), experience: this.experienceBeforeLevel(draft.species, param) } } as const;
+        case 13: return { condition: `at Lv. ${param}`, choiceLabel: `Level ${param}`, status: level >= param ? "can" : level === param - 1 && onePointBefore(param) ? "will" : "unmet", fulfillment: { kind: "level", level: Math.max(1, param - 1), experience: this.experienceBeforeLevel(draft.species, param) } } as const;
+        case 14: { const extras = (this.partyPokemon().length < 6 || draft.makePartyRoom) && this.bagQuantity(4, "balls") > 0; return { condition: `at Lv. ${param} with a free party slot and a Poké Ball`, choiceLabel: "Make room for Shedinja", status: extras && level >= param ? "can" : extras && level === param - 1 && onePointBefore(param) ? "will" : "unmet", fulfillment: { kind: "level", level: Math.max(1, param - 1), experience: this.experienceBeforeLevel(draft.species, param) } as const }; }
+        case 15: return { condition: `with Beauty of ${param} or higher`, choiceLabel: "Max Beauty", status: (draft.contest[1] ?? 0) >= param && level < 100 && onePointBefore(level + 1) ? "will" : "unmet", fulfillment: { kind: "beauty", value: 255, experience: nextLevelExperience } } as const;
+        case 18: return { condition: `at Lv. ${param} at night`, choiceLabel: "Level at Night", status: "unmet" } as const;
+        case 23: return { condition: `after leveling up knowing ${move}`, choiceLabel: `Learn ${move}`, status: draft.moves.includes(param) && level < 100 && onePointBefore(level + 1) ? "will" : "unmet", fulfillment: { kind: "move", move: param, experience: nextLevelExperience } } as const;
+        case 25: return { condition: "after leveling up in New Mauville", choiceLabel: "New Mauville", status: "unmet" } as const;
+        case 29: return { condition: `after leveling up with ${this.speciesName(param)} in the party`, choiceLabel: `${this.speciesName(param)} in Party`, status: partyHas(param) && level < 100 && onePointBefore(level + 1) ? "will" : "unmet" } as const;
+        case 43:
+        case 44: return { condition: `after leveling up knowing ${move} (personality-dependent form)`, choiceLabel: `Learn ${move}`, status: draft.moves.includes(param) && level < 100 && onePointBefore(level + 1) ? "will" : "unmet", fulfillment: { kind: "move", move: param, experience: nextLevelExperience } } as const;
+        case 47: return { condition: `after using ${move} 20 times and leveling up`, choiceLabel: `Use ${move} 20 Times`, status: "unmet" } as const;
+        default: return { condition: `by evolution method ${method} (${param})`, choiceLabel: `Method ${method}`, status: "unmet" } as const;
+      }
+    };
+
+    return usableEntries.map<EvolutionOption>(entry => {
+      const detail = describe(entry.method, entry.param);
+      return { text: `Evolves ${hasMultipleTargets ? `into ${this.speciesName(entry.target)} ` : ""}${detail.condition}`, choiceLabel: detail.choiceLabel, target: entry.target, method: entry.method, status: detail.status, fulfillment: detail.fulfillment };
+    });
+  }
+  evolutionSummary(draft: Parameters<SeaglassWebSave["evolutionOptions"]>[0]): EvolutionSummary {
+    const options = this.evolutionOptions(draft);
+    return { text: options.length ? options.map(option => option.text.replace(/^Evolves /, "")).join("; ").replace(/^/, "Evolves ") : "This Pokémon does not evolve.", canEvolve: options.some(option => option.status === "can") };
+  }
   speciesList() {
     const result: { id: number; name: string }[] = [];
     for (let id = 1; id < 1300; id++) {
@@ -190,6 +325,37 @@ export class SeaglassWebSave {
     const slot = existing >= 0 ? existing : empty; if (slot < 0) throw new Error(`No free slot in the ${pocket} pocket.`);
     const payload = new Uint8Array(4); set16(payload, 0, quantity ? id : 0); set16(payload, 2, quantity ? quantity ^ this.bagKey() : 0); this.writeSb1(off + slot * 4, payload);
   }
+  setBagItemQuantity(id: number, quantity: number) {
+    quantity = Math.max(0, Math.min(999, Math.trunc(quantity))); const pocket = this.itemPocket(id), layout = BAG_POCKETS.get(pocket);
+    if (!layout) throw new Error(`${this.itemName(id)} does not have a supported Bag pocket.`);
+    const [off, count] = layout, block = this.sb1; let existing = -1, empty = -1;
+    for (let index = 0; index < count; index++) { const stored = u16(block, off + index * 4); if (stored === id) { existing = index; break; } if (!stored && empty < 0) empty = index; }
+    if (!quantity && existing < 0) return; const slot = existing >= 0 ? existing : empty;
+    if (slot < 0) throw new Error(`No free slot in the ${["", "Items", "Poké Balls", "TMs", "Berries", "Key Items"][pocket]} pocket.`);
+    const payload = new Uint8Array(4); set16(payload, 0, quantity ? id : 0); set16(payload, 2, quantity ? quantity ^ this.bagKey() : 0); this.writeSb1(off + slot * 4, payload);
+  }
+  bagItemQuantity(id: number) {
+    const layout = BAG_POCKETS.get(this.itemPocket(id));
+    if (!layout) return 0;
+    const [off, count] = layout, block = this.sb1, key = this.bagKey();
+    for (let index = 0; index < count; index++) if (u16(block, off + index * 4) === id) return u16(block, off + index * 4 + 2) ^ key;
+    return 0;
+  }
+  private addItemToBag(id: number) {
+    const pocket = this.itemPocket(id), layout = BAG_POCKETS.get(pocket);
+    if (!layout) throw new Error(`${this.itemName(id)} does not have a supported Bag pocket.`);
+    const [off, count] = layout, block = this.sb1, current = this.bagItemQuantity(id);
+    if (current >= 999) throw new Error(`The ${this.itemName(id)} stack in the Bag is full.`);
+    let existing = -1, empty = -1;
+    for (let index = 0; index < count; index++) {
+      const stored = u16(block, off + index * 4);
+      if (stored === id) { existing = index; break; }
+      if (!stored && empty < 0) empty = index;
+    }
+    const slot = existing >= 0 ? existing : empty;
+    if (slot < 0) throw new Error(`No free slot in the ${["", "Items", "Poké Balls", "TMs", "Berries", "Key Items"][pocket]} pocket.`);
+    const payload = new Uint8Array(4); set16(payload, 0, id); set16(payload, 2, (current + 1) ^ this.bagKey()); this.writeSb1(off + slot * 4, payload);
+  }
   pcQuantity(id: number) { const block = this.sb1; for (let i = 0; i < 50; i++) if (u16(block, PC_ITEMS_OFF + i * 4) === id) return u16(block, PC_ITEMS_OFF + i * 4 + 2); return 0; }
   setPcQuantity(id: number, quantity: number) {
     quantity = Math.max(0, Math.min(999, Math.trunc(quantity))); const block = this.sb1; let existing = -1, empty = -1;
@@ -208,6 +374,42 @@ export class SeaglassWebSave {
     try { balls.forEach(ball => { this.setBagQuantity(ball.id, 0, "balls"); this.setPcQuantity(ball.id, 0); }); balls.forEach(ball => bagBalls.has(ball.name) ? this.setBagQuantity(ball.id, 99, "balls") : this.setPcQuantity(ball.id, 99)); essentials.forEach(name => { const item = byName.get(name)!; this.setBagQuantity(item.id, 99, item.pocket); }); }
     catch (error) { this.data = snapshot; throw error; }
   }
+  private applyBagPreset(ids: number[], quantity: number, expectedPocket: number, label: string) {
+    const snapshot = this.data.slice();
+    try {
+      for (const id of ids) if (this.itemPocket(id) !== expectedPocket) throw new Error(`${this.itemName(id)} is not in the expected ${label} pocket.`);
+      for (const id of ids) this.setBagItemQuantity(id, quantity);
+    } catch (error) { this.data = snapshot; throw error; }
+    return ids.length;
+  }
+  addAllTms() {
+    SEAGLASS_TM_IDS.forEach((id, index) => { if (this.itemName(id) !== `TM${String(index + 1).padStart(2, "0")}`) throw new Error(`Seaglass TM mapping mismatch at TM${String(index + 1).padStart(2, "0")}.`); });
+    return this.applyBagPreset(SEAGLASS_TM_IDS, 99, 3, "TM");
+  }
+  addAllBerries() {
+    SEAGLASS_BERRY_IDS.forEach(id => { if (!this.itemName(id).endsWith("Berry")) throw new Error(`Seaglass Berry mapping mismatch at item ${id}.`); });
+    return this.applyBagPreset(SEAGLASS_BERRY_IDS, 99, 4, "Berry");
+  }
+  addAllZCrystals() {
+    if (this.itemName(SEAGLASS_Z_CRYSTAL_IDS[0]) !== "Normalium Z" || this.itemName(SEAGLASS_Z_CRYSTAL_IDS.at(-1)!) !== "Ultranecrozium") throw new Error("Seaglass Z-Crystal mapping mismatch.");
+    return this.applyBagPreset(SEAGLASS_Z_CRYSTAL_IDS, 1, 1, "Items");
+  }
+
+  private flagSet(id: number) { return Boolean(this.sb1[FLAGS_OFF + Math.floor(id / 8)] & (1 << (id % 8))); }
+  currentLevelCap() {
+    for (const [flag, cap] of LEVEL_CAPS) if (!this.flagSet(flag)) return cap;
+    return 100;
+  }
+  raisePartyToLevelCap() {
+    const cap = this.currentLevelCap(), party = this.partyPokemon(), snapshot = this.data.slice(); let raised = 0;
+    try {
+      for (const pokemon of party) {
+        if (pokemon.level >= cap) continue;
+        this.updatePokemon(pokemon.location, { ...pokemon, level: cap }); raised++;
+      }
+    } catch (error) { this.data = snapshot; throw error; }
+    return { cap, raised, unchanged: party.length - raised };
+  }
 
   private decodeMon(raw: Uint8Array) {
     const pv = u32(raw, 0), otid = u32(raw, 4), key = (pv ^ otid) >>> 0; const dec = raw.slice(0x20, 0x50);
@@ -222,11 +424,18 @@ export class SeaglassWebSave {
 
   private isShiny(pv: number, otid: number) { return (((otid & 0xffff) ^ (otid >>> 16) ^ (pv & 0xffff) ^ (pv >>> 16)) & 0xffff) < 8; }
   private genderOf(pv: number, species: number) { const ratio = this.genderRatio(species); if (ratio === 255) return "N"; if (ratio === 254) return "F"; if (ratio === 0) return "M"; return (pv & 0xff) < ratio ? "F" : "M"; }
-  private newPv(species: number, otid: number, nature: number, gender: "M" | "F" | "N", shiny: boolean) {
+  private evolutionPersonalityMatches(pv: number, method?: number) {
+    if (method === 11) return ((pv >>> 16) % 10) <= 4;
+    if (method === 12) return ((pv >>> 16) % 10) > 4;
+    if (method === 43) return pv % 100 !== 0;
+    if (method === 44) return pv % 100 === 0;
+    return true;
+  }
+  private newPv(species: number, otid: number, nature: number, gender: "M" | "F" | "N", shiny: boolean, evolutionMethod?: number) {
     const tidSid = (otid & 0xffff) ^ (otid >>> 16);
     for (let attempt = 0; attempt < 2_000_000; attempt++) {
       const low = Math.floor(Math.random() * 0x10000); const high = shiny ? (low ^ tidSid ^ Math.floor(Math.random() * 8)) & 0xffff : Math.floor(Math.random() * 0x10000); const pv = ((high << 16) | low) >>> 0;
-      if (pv % 25 === nature && this.genderOf(pv, species) === gender && this.isShiny(pv, otid) === shiny) return pv;
+      if (pv % 25 === nature && this.genderOf(pv, species) === gender && this.isShiny(pv, otid) === shiny && this.evolutionPersonalityMatches(pv, evolutionMethod)) return pv;
     }
     throw new Error("Could not generate the requested nature, gender, and shiny combination.");
   }
@@ -239,17 +448,19 @@ export class SeaglassWebSave {
   private record(raw: Uint8Array, location: PokemonLocation): PokemonRecord | null {
     const mon = this.decodeMon(raw);
     if (!mon.valid || mon.species < 1 || mon.species > 1300) return null;
-    const ivWord = u32(mon.dec, mon.m + 4), experience = u32(mon.dec, mon.g + 4);
+    const ivWord = u32(mon.dec, mon.m + 4), ribbonWord = u32(mon.dec, mon.m + 8), storedAbilitySlot = ribbonWord >>> 30, experience = u32(mon.dec, mon.g + 4) & EXPERIENCE_MASK;
     return {
-      location, species: mon.species, nickname: decodeString(raw.subarray(8, 0x12)),
+      location, species: mon.species, nickname: decodeString(raw.subarray(8, 0x12)), experience,
       level: location.kind === "party" ? Math.max(1, raw[0x54]) : this.levelFromExperience(mon.species, experience),
       nature: mon.pv % 25, gender: this.genderOf(mon.pv, mon.species) as "M" | "F" | "N",
-      shiny: this.isShiny(mon.pv, mon.otid), abilitySlot: ((ivWord >>> 31) & 1) as 0 | 1,
+      shiny: this.isShiny(mon.pv, mon.otid), abilitySlot: (storedAbilitySlot <= 2 ? storedAbilitySlot : 0) as AbilitySlot,
       heldItem: u16(mon.dec, mon.g + 2), friendship: mon.dec[mon.g + 9],
-      moves: Array.from({ length: 4 }, (_, i) => u16(mon.dec, mon.a + i * 2)),
-      pp: Array.from(mon.dec.subarray(mon.a + 8, mon.a + 12)),
+      moves: Array.from({ length: 4 }, (_, i) => u16(mon.dec, mon.a + i * 2) & 0x7ff),
+      pp: Array.from({ length: 4 }, (_, i) => mon.dec[mon.a + 8 + i] & 0x7f),
+      ppUps: Array.from({ length: 4 }, (_, i) => (mon.dec[mon.g + 8] >>> (i * 2)) & 3),
       ivs: Array.from({ length: 6 }, (_, i) => (ivWord >>> (5 * i)) & 31),
       evs: Array.from(mon.dec.subarray(mon.e, mon.e + 6)),
+      contest: Array.from(mon.dec.subarray(mon.e + 6, mon.e + 11)), sheen: mon.dec[mon.e + 11],
       otName: decodeString(raw.subarray(0x14, 0x1b)), isEgg: Boolean(ivWord & 0x40000000),
     };
   }
@@ -269,7 +480,34 @@ export class SeaglassWebSave {
     return result;
   }
 
-  updatePokemon(location: PokemonLocation, draft: NewPokemon) {
+  private movePartyMemberToPc(index: number) {
+    const party = this.sb1, count = Math.min(u32(party, PARTY_COUNT_OFF), 6);
+    if (count < 1 || index < 0 || index >= count) throw new Error("That party member could not be moved.");
+    let empty = -1;
+    for (let boxIndex = 0; boxIndex < 420; boxIndex++) if (!this.boxPokemon(boxIndex)) { empty = boxIndex; break; }
+    if (empty < 0) throw new Error("No empty PC box slot is available for the party member.");
+    const raw = party.slice(PARTY_OFF + index * 100, PARTY_OFF + (index + 1) * 100);
+    this.writeStorage(4 + empty * 80, raw.subarray(0, 80));
+    const compacted = new Uint8Array((count - index) * 100);
+    for (let source = index + 1; source < count; source++) compacted.set(party.subarray(PARTY_OFF + source * 100, PARTY_OFF + (source + 1) * 100), (source - index - 1) * 100);
+    this.writeSb1(PARTY_OFF + index * 100, compacted);
+    const countBytes = new Uint8Array(4); set32(countBytes, 0, count - 1); this.writeSb1(PARTY_COUNT_OFF, countBytes);
+  }
+  updatePokemon(location: PokemonLocation, draft: NewPokemon): PokemonLocation {
+    const snapshot = this.data.slice();
+    try {
+      let actualLocation = location;
+      if (draft.makePartyRoom && this.partyPokemon().length >= 6) {
+        const last = 5, remove = location.kind === "party" && location.index === last ? 4 : last;
+        this.movePartyMemberToPc(remove);
+        if (location.kind === "party" && remove < location.index) actualLocation = { kind: "party", index: location.index - 1 };
+      }
+      this.updatePokemonCore(actualLocation, draft);
+      if (draft.returnedHeldItem) this.addItemToBag(draft.returnedHeldItem);
+      return actualLocation;
+    } catch (error) { this.data = snapshot; throw error; }
+  }
+  private updatePokemonCore(location: PokemonLocation, draft: NewPokemon) {
     const party = location.kind === "party", size = party ? 100 : 80;
     const logicalOff = party ? PARTY_OFF + location.index * 100 : 4 + location.index * 80;
     const source = party ? this.sb1 : this.storage, raw = source.slice(logicalOff, logicalOff + size), current = this.decodeMon(raw);
@@ -277,20 +515,34 @@ export class SeaglassWebSave {
     const species = Math.max(1, Math.min(1300, Math.trunc(draft.species))), nature = Math.max(0, Math.min(24, Math.trunc(draft.nature)));
     const ivs = Array.from({ length: 6 }, (_, index) => clampInteger(draft.ivs[index] ?? 0, 0, 31)), evs = legalEvs(draft.evs);
     const ratio = this.genderRatio(species), gender: "M" | "F" | "N" = ratio === 255 ? "N" : ratio === 254 ? "F" : ratio === 0 ? "M" : draft.gender;
-    const pvMatches = current.pv % 25 === nature && this.genderOf(current.pv, species) === gender && this.isShiny(current.pv, current.otid) === draft.shiny;
-    const pv = pvMatches ? current.pv : this.newPv(species, current.otid, nature, gender, draft.shiny);
+    const pvMatches = current.pv % 25 === nature && this.genderOf(current.pv, species) === gender && this.isShiny(current.pv, current.otid) === draft.shiny && this.evolutionPersonalityMatches(current.pv, draft.evolutionMethod);
+    const pv = pvMatches ? current.pv : this.newPv(species, current.otid, nature, gender, draft.shiny, draft.evolutionMethod);
     const blocks: Record<string, Uint8Array> = {
       G: current.dec.slice(current.g, current.g + 12), A: current.dec.slice(current.a, current.a + 12),
       E: current.dec.slice(current.e, current.e + 12), M: current.dec.slice(current.m, current.m + 12),
     };
     const level = Math.max(1, Math.min(100, Math.trunc(draft.level)));
     set16(blocks.G, 0, species); set16(blocks.G, 2, Math.max(0, Math.trunc(draft.heldItem)));
-    set32(blocks.G, 4, expAt(this.growthRate(species), level)); blocks.G[9] = clampInteger(draft.friendship, 0, 255);
-    for (let i = 0; i < 4; i++) { set16(blocks.A, i * 2, Math.max(0, Math.trunc(draft.moves[i] || 0))); blocks.A[8 + i] = Math.max(0, Math.min(99, Math.trunc(draft.pp[i] || 0))); }
+    const experienceUpper = u32(blocks.G, 4) & EXPERIENCE_UPPER_MASK;
+    const requestedExperience = draft.experience == null ? null : clampInteger(draft.experience, 0, EXPERIENCE_MASK);
+    const experience = requestedExperience != null && this.levelFromExperience(species, requestedExperience) === level ? requestedExperience : expAt(this.growthRate(species), level);
+    set32(blocks.G, 4, experienceUpper | (experience & EXPERIENCE_MASK));
+    blocks.G[8] = Array.from({ length: 4 }, (_, i) => clampInteger(draft.ppUps[i] ?? 0, 0, 3)).reduce((packed, value, i) => packed | (value << (i * 2)), 0);
+    blocks.G[9] = clampInteger(draft.friendship, 0, 255);
+    for (let i = 0; i < 4; i++) {
+      const move = clampInteger(draft.moves[i] ?? 0, 0, 0x7ff), preserved = u16(blocks.A, i * 2) & 0xf800;
+      set16(blocks.A, i * 2, preserved | move);
+      const pp = clampInteger(draft.pp[i] ?? 0, 0, this.moveMaxPp(move, draft.ppUps[i] ?? 0));
+      blocks.A[8 + i] = (blocks.A[8 + i] & 0x80) | pp;
+    }
     for (let i = 0; i < 6; i++) blocks.E[i] = evs[i];
-    let ivWord = u32(blocks.M, 4) & 0x40000000; if (draft.abilitySlot) ivWord |= 0x80000000;
+    for (let i = 0; i < 5; i++) blocks.E[6 + i] = clampInteger(draft.contest[i] ?? 0, 0, 255);
+    blocks.E[11] = clampInteger(draft.sheen, 0, 255);
+    let ivWord = u32(blocks.M, 4) & 0xc0000000;
     for (let i = 0; i < 6; i++) ivWord |= (ivs[i] & 31) << (5 * i);
     set32(blocks.M, 4, ivWord >>> 0);
+    const ribbonWord = u32(blocks.M, 8) & 0x3fffffff;
+    set32(blocks.M, 8, (ribbonWord | (clampInteger(draft.abilitySlot, 0, 2) << 30)) >>> 0);
     const order = SUBSTRUCT_ORDER[pv % 24], dec = new Uint8Array(48); order.split("").forEach((key, blockIndex) => dec.set(blocks[key], blockIndex * 12));
     set32(raw, 0, pv); raw.set(encodeString(draft.nickname || this.speciesName(species), 10), 8);
     const changed = { pv, otid: current.otid, key: (pv ^ current.otid) >>> 0, dec, g: order.indexOf("G") * 12, a: order.indexOf("A") * 12, e: order.indexOf("E") * 12, m: order.indexOf("M") * 12, species, valid: true };
@@ -348,11 +600,16 @@ export class SeaglassWebSave {
     const raw = new Uint8Array(80); set32(raw, 0, pv); set32(raw, 4, otid); raw.set(encodeString(draft.nickname || this.speciesName(draft.species), 10), 8); raw[0x12] = 2; raw.set(this.data.subarray(sec0, sec0 + 7), 0x14);
     const blocks: Record<string, Uint8Array> = { G: new Uint8Array(12), A: new Uint8Array(12), E: new Uint8Array(12), M: new Uint8Array(12) };
     for (let templateIndex = 0; templateIndex < 420; templateIndex++) { const templateRaw = storage.slice(4 + templateIndex * 80, 4 + (templateIndex + 1) * 80), template = this.decodeMon(templateRaw); if (template.valid && template.species) { blocks.M.set(template.dec.subarray(template.m, template.m + 12)); raw[0x13] = templateRaw[0x13]; break; } }
-    set16(blocks.G, 0, draft.species); set16(blocks.G, 2, draft.heldItem || 0); set32(blocks.G, 4, expAt(this.growthRate(draft.species), Math.max(1, Math.min(100, draft.level)))); blocks.G[9] = clampInteger(draft.friendship, 0, 255);
-    for (let i = 0; i < 4; i++) { set16(blocks.A, i * 2, draft.moves[i] || 0); blocks.A[8 + i] = Math.max(0, Math.min(99, draft.pp[i] || 0)); }
+    set16(blocks.G, 0, draft.species); set16(blocks.G, 2, draft.heldItem || 0); set32(blocks.G, 4, EMPTY_EXTENDED_NICKNAME | (expAt(this.growthRate(draft.species), Math.max(1, Math.min(100, draft.level))) & EXPERIENCE_MASK));
+    blocks.G[8] = Array.from({ length: 4 }, (_, i) => clampInteger(draft.ppUps[i] ?? 0, 0, 3)).reduce((packed, value, i) => packed | (value << (i * 2)), 0);
+    blocks.G[9] = clampInteger(draft.friendship, 0, 255);
+    for (let i = 0; i < 4; i++) { const move = clampInteger(draft.moves[i] ?? 0, 0, 0x7ff); set16(blocks.A, i * 2, move); blocks.A[8 + i] = clampInteger(draft.pp[i] ?? 0, 0, this.moveMaxPp(move, draft.ppUps[i] ?? 0)); }
     for (let i = 0; i < 6; i++) blocks.E[i] = evs[i];
+    for (let i = 0; i < 5; i++) blocks.E[6 + i] = clampInteger(draft.contest[i] ?? 0, 0, 255);
+    blocks.E[11] = clampInteger(draft.sheen, 0, 255);
     blocks.M[0] = 0; blocks.M.fill(0, 8, 12); const level = Math.max(1, Math.min(100, draft.level)); set16(blocks.M, 2, (u16(blocks.M, 2) & 0xff80) | (level & 0x7f));
-    let ivWord = draft.abilitySlot ? 0x80000000 : 0; for (let i = 0; i < 6; i++) ivWord |= (ivs[i] & 31) << (5 * i); set32(blocks.M, 4, ivWord >>> 0);
+    let ivWord = 0; for (let i = 0; i < 6; i++) ivWord |= (ivs[i] & 31) << (5 * i); set32(blocks.M, 4, ivWord >>> 0);
+    set32(blocks.M, 8, (clampInteger(draft.abilitySlot, 0, 2) << 30) >>> 0);
     const order = SUBSTRUCT_ORDER[pv % 24], dec = new Uint8Array(48); order.split("").forEach((key, blockIndex) => dec.set(blocks[key], blockIndex * 12));
     const mon = { pv, otid, key: (pv ^ otid) >>> 0, dec, g: order.indexOf("G") * 12, a: order.indexOf("A") * 12, e: order.indexOf("E") * 12, m: order.indexOf("M") * 12, species: draft.species, valid: true };
     this.writeStorage(off, this.encodeMon(raw, mon));
