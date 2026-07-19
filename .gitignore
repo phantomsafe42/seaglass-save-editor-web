@@ -34,6 +34,8 @@ yarn-error.log*
 
 # typescript
 /dist/
+/.vinext/
+/.wrangler/
 /outputs/
 /work/
 *.tsbuildinfo
