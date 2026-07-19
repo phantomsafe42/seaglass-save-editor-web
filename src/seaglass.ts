@@ -26,6 +26,8 @@ const MOVE_PTR_1 = 0x6d2a18;
 const MOVE_STRIDE = 0x38;
 const ABILITY_BASE = 0x6e15b0;
 const ABILITY_STRIDE = 0x1c;
+const ABILITY_SLOT_SHIFT = 29;
+const ABILITY_SLOT_MASK = 0x60000000;
 const EXPERIENCE_MASK = 0x1fffff;
 const EXPERIENCE_UPPER_MASK = 0xffe00000;
 const EMPTY_EXTENDED_NICKNAME = 0x1fe00000;
@@ -528,7 +530,7 @@ export class SeaglassWebSave {
   private record(raw: Uint8Array, location: PokemonLocation): PokemonRecord | null {
     const mon = this.decodeMon(raw);
     if (!mon.valid || mon.species < 1 || mon.species > 1300) return null;
-    const ivWord = u32(mon.dec, mon.m + 4), ribbonWord = u32(mon.dec, mon.m + 8), storedAbilitySlot = ribbonWord >>> 30, experience = u32(mon.dec, mon.g + 4) & EXPERIENCE_MASK;
+    const ivWord = u32(mon.dec, mon.m + 4), ribbonWord = u32(mon.dec, mon.m + 8), storedAbilitySlot = (ribbonWord >>> ABILITY_SLOT_SHIFT) & 3, experience = u32(mon.dec, mon.g + 4) & EXPERIENCE_MASK;
     return {
       location, species: mon.species, nickname: decodeString(raw.subarray(8, 0x12)), experience,
       level: location.kind === "party" ? Math.max(1, raw[0x54]) : this.levelFromExperience(mon.species, experience),
@@ -625,8 +627,8 @@ export class SeaglassWebSave {
     let ivWord = u32(blocks.M, 4) & 0xc0000000;
     for (let i = 0; i < 6; i++) ivWord |= (ivs[i] & 31) << (5 * i);
     set32(blocks.M, 4, ivWord >>> 0);
-    const ribbonWord = u32(blocks.M, 8) & 0x3fffffff;
-    set32(blocks.M, 8, (ribbonWord | (clampInteger(draft.abilitySlot, 0, 2) << 30)) >>> 0);
+    const ribbonWord = u32(blocks.M, 8) & ~ABILITY_SLOT_MASK;
+    set32(blocks.M, 8, (ribbonWord | (clampInteger(draft.abilitySlot, 0, 2) << ABILITY_SLOT_SHIFT)) >>> 0);
     const order = SUBSTRUCT_ORDER[pv % 24], dec = new Uint8Array(48); order.split("").forEach((key, blockIndex) => dec.set(blocks[key], blockIndex * 12));
     set32(raw, 0, pv); raw.set(encodeString(draft.nickname || this.speciesName(species), 10), 8);
     const changed = { pv, otid: current.otid, key: (pv ^ current.otid) >>> 0, dec, g: order.indexOf("G") * 12, a: order.indexOf("A") * 12, e: order.indexOf("E") * 12, m: order.indexOf("M") * 12, species, valid: true };
@@ -712,7 +714,7 @@ export class SeaglassWebSave {
     blocks.E[11] = clampInteger(draft.sheen, 0, 255);
     blocks.M[0] = 0; blocks.M.fill(0, 8, 12); const level = Math.max(1, Math.min(100, draft.level)); set16(blocks.M, 2, (u16(blocks.M, 2) & 0xff80) | (level & 0x7f));
     let ivWord = 0; for (let i = 0; i < 6; i++) ivWord |= (ivs[i] & 31) << (5 * i); set32(blocks.M, 4, ivWord >>> 0);
-    set32(blocks.M, 8, (clampInteger(draft.abilitySlot, 0, 2) << 30) >>> 0);
+    set32(blocks.M, 8, (clampInteger(draft.abilitySlot, 0, 2) << ABILITY_SLOT_SHIFT) >>> 0);
     const order = SUBSTRUCT_ORDER[pv % 24], dec = new Uint8Array(48); order.split("").forEach((key, blockIndex) => dec.set(blocks[key], blockIndex * 12));
     const mon = { pv, otid, key: (pv ^ otid) >>> 0, dec, g: order.indexOf("G") * 12, a: order.indexOf("A") * 12, e: order.indexOf("E") * 12, m: order.indexOf("M") * 12, species: draft.species, valid: true };
     this.writeStorage(off, this.encodeMon(raw, mon));

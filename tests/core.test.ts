@@ -120,6 +120,9 @@ assert.deepEqual(editor.speciesAbilities(255).map(ability => [ability.slot, abil
 assert.deepEqual(editor.speciesAbilities(257).map(ability => [ability.slot, ability.name, ability.hidden]), [
   [0, "Blaze", false], [1, "Defiant", false], [2, "Athletic", true],
 ]);
+assert.deepEqual(editor.speciesAbilities(183).map(ability => [ability.slot, ability.name, ability.hidden]), [
+  [0, "Thick Fat", false], [1, "Huge Power", false], [2, "Sap Sipper", true],
+]);
 const torchicEvolution = editor.evolutionSummary({ species: 255, level: 15, nature: 0, gender: "M", heldItem: 0, friendship: 70, moves: [], ivs: [0,0,0,0,0,0], evs: [0,0,0,0,0,0], contest: [0,0,0,0,0] });
 assert.deepEqual(torchicEvolution, { text: "Evolves at Lv. 16", canEvolve: false });
 assert.deepEqual(editor.evolutionSummary({ species: 255, level: 16, nature: 0, gender: "M", heldItem: 0, friendship: 70, moves: [], ivs: [0,0,0,0,0,0], evs: [0,0,0,0,0,0], contest: [0,0,0,0,0] }), { text: "Evolves at Lv. 16", canEvolve: true });
@@ -169,13 +172,17 @@ assert.equal(currentBoxed.find(record => currentEditor.speciesName(record!.speci
 assert.equal(currentBoxed.find(record => currentEditor.speciesName(record!.species) === "Zigzagoon")?.level, 8);
 const torchic = currentEditor.partyPokemon().find(record => currentEditor.speciesName(record.species) === "Torchic");
 assert.ok(torchic);
-assert.equal(torchic.abilitySlot, 0);
 const torchicWordsBefore = pokemonWords(currentEditor, torchic.location);
-currentEditor.updatePokemon(torchic.location, { ...torchic, abilitySlot: 2 });
+assert.equal(torchic.abilitySlot, (torchicWordsBefore.ribbons >>> 29) & 3);
+for (const abilitySlot of [0, 1, 2] as const) {
+  const currentTorchic = currentEditor.partyPokemon().find(record => record.location.index === torchic.location.index);
+  assert.ok(currentTorchic);
+  currentEditor.updatePokemon(torchic.location, { ...currentTorchic, abilitySlot });
+  assert.equal(currentEditor.partyPokemon().find(record => record.location.index === torchic.location.index)?.abilitySlot, abilitySlot);
+  assert.equal((pokemonWords(currentEditor, torchic.location).ribbons >>> 29) & 3, abilitySlot, `ability slot ${abilitySlot} must use bits 29–30`);
+}
 const torchicWordsAfter = pokemonWords(currentEditor, torchic.location);
-assert.equal(currentEditor.partyPokemon().find(record => record.location.index === torchic.location.index)?.abilitySlot, 2);
-assert.equal(torchicWordsAfter.ribbons >>> 30, 2);
-assert.equal(torchicWordsAfter.ribbons & 0x3fffffff, torchicWordsBefore.ribbons & 0x3fffffff);
+assert.equal(torchicWordsAfter.ribbons & 0x9fffffff, torchicWordsBefore.ribbons & 0x9fffffff, "changing abilities must preserve ribbons and the modern fateful encounter flag");
 assert.equal(torchicWordsAfter.iv & 0xc0000000, torchicWordsBefore.iv & 0xc0000000);
 assert.deepEqual(currentEditor.verifyChecksums(), []);
 assert.equal(currentEditor.currentLevelCap(), 19);
@@ -322,7 +329,7 @@ assert.equal(editor.boxPokemon(emptySlot.index)?.ball, 1, "newly added Pokémon 
 assert.deepEqual(editor.boxPokemon(emptySlot.index)?.ppUps, [3, 0, 0, 0]);
 assert.deepEqual(editor.boxPokemon(emptySlot.index)?.contest, [255, 200, 150, 100, 50]);
 assert.equal(editor.boxPokemon(emptySlot.index)?.sheen, 25);
-assert.equal(pokemonWords(editor, { kind: "box", index: emptySlot.index }).ribbons >>> 30, 2);
+assert.equal((pokemonWords(editor, { kind: "box", index: emptySlot.index }).ribbons >>> 29) & 3, 2);
 assert.equal(boxedExperienceWord(editor, emptySlot.index) & 0xffe00000, 0x1fe00000);
 assert.deepEqual(editor.verifyChecksums(), []);
 assert.throws(() => editor.addBoxPokemon(emptySlot.index, {
