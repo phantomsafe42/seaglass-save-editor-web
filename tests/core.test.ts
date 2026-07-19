@@ -22,6 +22,8 @@ assert.deepEqual([sprite.width, sprite.height], [64, 64]);
 assert.ok(sprite.pixels.some((value, index) => index % 4 === 3 && value > 0));
 
 const editedParty = { ...party[0], nickname: "WEBEDIT", level: Math.min(100, party[0].level + 1), nature: (party[0].nature + 1) % 25, ivs: [30, 29, 28, 27, 26, 25], evs: [1, 2, 3, 4, 5, 6] };
+assert.throws(() => editor.updatePokemon(party[0].location, { ...editedParty, evs: [252, 252, 7, 0, 0, 0] }), /EV total cannot exceed 510/);
+assert.deepEqual(editor.verifyChecksums(), []);
 editor.updatePokemon(party[0].location, editedParty);
 const partyAfter = editor.partyPokemon()[0];
 assert.equal(partyAfter.nickname, "WEBEDIT");
@@ -33,16 +35,23 @@ assert.deepEqual(editor.verifyChecksums(), []);
 
 const firstBox = editor.boxPokemon(0);
 assert.ok(firstBox);
-editor.updatePokemon(firstBox.location, { ...firstBox, nickname: "BOXEDIT", level: Math.min(100, firstBox.level + 1), friendship: 123 });
+editor.updatePokemon(firstBox.location, { ...firstBox, nickname: "BOXEDIT", level: Math.min(100, firstBox.level + 1), friendship: 999, ivs: [99, 99, 99, 99, 99, 99] });
 const boxAfter = editor.boxPokemon(0);
 assert.ok(boxAfter);
 assert.equal(boxAfter.nickname, "BOXEDIT");
 assert.equal(boxAfter.level, Math.min(100, firstBox.level + 1));
-assert.equal(boxAfter.friendship, 123);
+assert.equal(boxAfter.friendship, 255);
+assert.deepEqual(boxAfter.ivs, [31, 31, 31, 31, 31, 31]);
 assert.deepEqual(editor.verifyChecksums(), []);
 
 const emptySlot = editor.boxSlots(0).find(slot => !slot.occupied);
 assert.ok(emptySlot);
+assert.throws(() => editor.addBoxPokemon(emptySlot.index, {
+  species: 1, nickname: "TOOMANYEVS", level: 5, nature: 3,
+  gender: "M", shiny: false, abilitySlot: 0, heldItem: 0,
+  friendship: 999, moves: [1, 0, 0, 0], pp: [35, 0, 0, 0],
+  ivs: [99, 99, 99, 99, 99, 99], evs: [252, 252, 7, 0, 0, 0],
+}), /EV total cannot exceed 510/);
 editor.addBoxPokemon(emptySlot.index, {
   species: 1, nickname: "BULBASAUR", level: 5, nature: 3,
   gender: "M", shiny: false, abilitySlot: 0, heldItem: 0,

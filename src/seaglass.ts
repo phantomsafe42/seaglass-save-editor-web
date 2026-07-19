@@ -62,6 +62,14 @@ function checksum(block: Uint8Array) {
   return (((total >>> 16) + (total & 0xffff)) & 0xffff) >>> 0;
 }
 
+const clampInteger = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? Math.trunc(value) : minimum));
+function legalEvs(values: number[]) {
+  const evs = Array.from({ length: 6 }, (_, index) => clampInteger(values[index] ?? 0, 0, 252));
+  const total = evs.reduce((sum, value) => sum + value, 0);
+  if (total > 510) throw new Error(`EV total cannot exceed 510 (received ${total}).`);
+  return evs;
+}
+
 export type Pocket = "items" | "balls";
 export type EditableItem = { id: number; name: string; pocket: Pocket };
 export type NewPokemon = {
@@ -267,6 +275,7 @@ export class SeaglassWebSave {
     const source = party ? this.sb1 : this.storage, raw = source.slice(logicalOff, logicalOff + size), current = this.decodeMon(raw);
     if (!current.valid || !current.species) throw new Error("That Pokémon could not be read.");
     const species = Math.max(1, Math.min(1300, Math.trunc(draft.species))), nature = Math.max(0, Math.min(24, Math.trunc(draft.nature)));
+    const ivs = Array.from({ length: 6 }, (_, index) => clampInteger(draft.ivs[index] ?? 0, 0, 31)), evs = legalEvs(draft.evs);
     const ratio = this.genderRatio(species), gender: "M" | "F" | "N" = ratio === 255 ? "N" : ratio === 254 ? "F" : ratio === 0 ? "M" : draft.gender;
     const pvMatches = current.pv % 25 === nature && this.genderOf(current.pv, species) === gender && this.isShiny(current.pv, current.otid) === draft.shiny;
     const pv = pvMatches ? current.pv : this.newPv(species, current.otid, nature, gender, draft.shiny);
@@ -276,11 +285,11 @@ export class SeaglassWebSave {
     };
     const level = Math.max(1, Math.min(100, Math.trunc(draft.level)));
     set16(blocks.G, 0, species); set16(blocks.G, 2, Math.max(0, Math.trunc(draft.heldItem)));
-    set32(blocks.G, 4, expAt(this.growthRate(species), level)); blocks.G[9] = Math.max(0, Math.min(255, Math.trunc(draft.friendship)));
+    set32(blocks.G, 4, expAt(this.growthRate(species), level)); blocks.G[9] = clampInteger(draft.friendship, 0, 255);
     for (let i = 0; i < 4; i++) { set16(blocks.A, i * 2, Math.max(0, Math.trunc(draft.moves[i] || 0))); blocks.A[8 + i] = Math.max(0, Math.min(99, Math.trunc(draft.pp[i] || 0))); }
-    for (let i = 0; i < 6; i++) blocks.E[i] = Math.max(0, Math.min(252, Math.trunc(draft.evs[i] || 0)));
+    for (let i = 0; i < 6; i++) blocks.E[i] = evs[i];
     let ivWord = u32(blocks.M, 4) & 0x40000000; if (draft.abilitySlot) ivWord |= 0x80000000;
-    for (let i = 0; i < 6; i++) ivWord |= (Math.max(0, Math.min(31, Math.trunc(draft.ivs[i] ?? 0))) & 31) << (5 * i);
+    for (let i = 0; i < 6; i++) ivWord |= (ivs[i] & 31) << (5 * i);
     set32(blocks.M, 4, ivWord >>> 0);
     const order = SUBSTRUCT_ORDER[pv % 24], dec = new Uint8Array(48); order.split("").forEach((key, blockIndex) => dec.set(blocks[key], blockIndex * 12));
     set32(raw, 0, pv); raw.set(encodeString(draft.nickname || this.speciesName(species), 10), 8);
@@ -288,7 +297,7 @@ export class SeaglassWebSave {
     const out = this.encodeMon(raw, changed);
     if (party) {
       out[0x54] = level; const base = this.baseStats(species), [boost, lower] = NATURE_MOD[nature];
-      const core = (i: number) => Math.floor((2 * base[i] + (draft.ivs[i] || 0) + Math.floor((draft.evs[i] || 0) / 4)) * level / 100);
+      const core = (i: number) => Math.floor((2 * base[i] + ivs[i] + Math.floor(evs[i] / 4)) * level / 100);
       const stats = [species === 292 ? 1 : core(0) + level + 10];
       for (let i = 1; i < 6; i++) { let value = core(i) + 5; if (boost !== lower) value = i - 1 === boost ? Math.floor(value * 1.1) : i - 1 === lower ? Math.floor(value * .9) : value; stats.push(value); }
       [stats[0], ...stats].forEach((value, i) => set16(out, 0x56 + i * 2, value));
@@ -332,17 +341,18 @@ export class SeaglassWebSave {
     if (index < 0 || index >= 420) throw new Error("Invalid PC box slot.");
     const off = 4 + index * 80, storage = this.storage, current = this.decodeMon(storage.slice(off, off + 80));
     if (current.valid && current.species) throw new Error("That PC slot is no longer empty.");
+    const ivs = Array.from({ length: 6 }, (_, position) => clampInteger(draft.ivs[position] ?? 31, 0, 31)), evs = legalEvs(draft.evs);
     const sec0 = this.sections.get(0)!; const tid = u16(this.data, sec0 + 0x0a), sid = u16(this.data, sec0 + 0x0c), otid = (tid | (sid << 16)) >>> 0;
     const ratio = this.genderRatio(draft.species); const fixedGender: "M" | "F" | "N" = ratio === 255 ? "N" : ratio === 254 ? "F" : ratio === 0 ? "M" : draft.gender;
     const pv = this.newPv(draft.species, otid, Math.max(0, Math.min(24, draft.nature)), fixedGender, draft.shiny);
     const raw = new Uint8Array(80); set32(raw, 0, pv); set32(raw, 4, otid); raw.set(encodeString(draft.nickname || this.speciesName(draft.species), 10), 8); raw[0x12] = 2; raw.set(this.data.subarray(sec0, sec0 + 7), 0x14);
     const blocks: Record<string, Uint8Array> = { G: new Uint8Array(12), A: new Uint8Array(12), E: new Uint8Array(12), M: new Uint8Array(12) };
     for (let templateIndex = 0; templateIndex < 420; templateIndex++) { const templateRaw = storage.slice(4 + templateIndex * 80, 4 + (templateIndex + 1) * 80), template = this.decodeMon(templateRaw); if (template.valid && template.species) { blocks.M.set(template.dec.subarray(template.m, template.m + 12)); raw[0x13] = templateRaw[0x13]; break; } }
-    set16(blocks.G, 0, draft.species); set16(blocks.G, 2, draft.heldItem || 0); set32(blocks.G, 4, expAt(this.growthRate(draft.species), Math.max(1, Math.min(100, draft.level)))); blocks.G[9] = Math.max(0, Math.min(255, draft.friendship));
+    set16(blocks.G, 0, draft.species); set16(blocks.G, 2, draft.heldItem || 0); set32(blocks.G, 4, expAt(this.growthRate(draft.species), Math.max(1, Math.min(100, draft.level)))); blocks.G[9] = clampInteger(draft.friendship, 0, 255);
     for (let i = 0; i < 4; i++) { set16(blocks.A, i * 2, draft.moves[i] || 0); blocks.A[8 + i] = Math.max(0, Math.min(99, draft.pp[i] || 0)); }
-    for (let i = 0; i < 6; i++) blocks.E[i] = Math.max(0, Math.min(252, draft.evs[i] || 0));
+    for (let i = 0; i < 6; i++) blocks.E[i] = evs[i];
     blocks.M[0] = 0; blocks.M.fill(0, 8, 12); const level = Math.max(1, Math.min(100, draft.level)); set16(blocks.M, 2, (u16(blocks.M, 2) & 0xff80) | (level & 0x7f));
-    let ivWord = draft.abilitySlot ? 0x80000000 : 0; for (let i = 0; i < 6; i++) ivWord |= (Math.max(0, Math.min(31, draft.ivs[i] ?? 31)) & 31) << (5 * i); set32(blocks.M, 4, ivWord >>> 0);
+    let ivWord = draft.abilitySlot ? 0x80000000 : 0; for (let i = 0; i < 6; i++) ivWord |= (ivs[i] & 31) << (5 * i); set32(blocks.M, 4, ivWord >>> 0);
     const order = SUBSTRUCT_ORDER[pv % 24], dec = new Uint8Array(48); order.split("").forEach((key, blockIndex) => dec.set(blocks[key], blockIndex * 12));
     const mon = { pv, otid, key: (pv ^ otid) >>> 0, dec, g: order.indexOf("G") * 12, a: order.indexOf("A") * 12, e: order.indexOf("E") * 12, m: order.indexOf("M") * 12, species: draft.species, valid: true };
     this.writeStorage(off, this.encodeMon(raw, mon));

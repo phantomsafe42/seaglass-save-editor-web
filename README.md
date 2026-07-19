@@ -11,6 +11,7 @@ A private, browser-based save editor for **Pokémon Emerald Seaglass**. The ROM 
 - Set all party and boxed Pokémon IVs to 31
 - Browse the full party and all 14 PC boxes with normal or shiny sprites decoded from the selected ROM
 - Edit existing party and boxed Pokémon, including species, nickname, level, nature, gender, shininess, ability, held item, moves, PP, friendship, IVs, and EVs
+- Enforce legal limits: 255 Friendship, 31 per IV, 252 per EV, and 510 total EVs
 - Select any empty PC box slot and create a new Pokémon with species, nickname, level, nature, gender, shininess, ability, held item, moves, PP, friendship, IVs, and EVs
 - Recalculate party battle stats after Pokémon or IV changes
 - Validate and repair Emerald section checksums after every edit

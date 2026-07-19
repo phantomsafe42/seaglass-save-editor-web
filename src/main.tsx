@@ -7,6 +7,7 @@ type Tab = "auto" | "pokemon" | "bag";
 type PokemonSelection = PokemonLocation | { kind: "empty"; index: number };
 const DB_NAME = "seaglass-editor";
 const NATURES = ["Hardy","Lonely","Brave","Adamant","Naughty","Bold","Docile","Relaxed","Impish","Lax","Timid","Hasty","Serious","Jolly","Naive","Modest","Mild","Quiet","Bashful","Rash","Calm","Gentle","Sassy","Careful","Quirky"];
+const clamp = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? Math.trunc(value) : minimum));
 
 function romStore(mode: "get" | "put", value?: ArrayBuffer): Promise<ArrayBuffer | null> {
   return new Promise((resolve, reject) => {
@@ -41,6 +42,8 @@ function PokemonForm({ editor, location, initial, onSubmit }: { editor: Seaglass
   const abilities = editor.speciesAbilities(speciesId), ratio = editor.genderRatio(speciesId);
   function changeSpecies(id: number) { const nextRatio = editor.genderRatio(id); setSpeciesId(id); setNickname(editor.speciesName(id)); setFriendship(editor.baseFriendship(id)); setAbilitySlot(0); if (nextRatio === 255) setGender("N"); else if (nextRatio === 254) setGender("F"); else if (nextRatio === 0) setGender("M"); else if (gender === "N") setGender("M"); }
   const updateArray = (setter: React.Dispatch<React.SetStateAction<number[]>>, index: number, value: number) => setter(current => current.map((entry, i) => i === index ? value : entry));
+  const updateEv = (index: number, value: number) => setEvs(current => { const otherTotal = current.reduce((total, entry, i) => total + (i === index ? 0 : entry), 0), maximum = Math.min(252, Math.max(0, 510 - otherTotal)); return current.map((entry, i) => i === index ? clamp(value, 0, maximum) : entry); });
+  const evTotal = evs.reduce((total, value) => total + value, 0);
   return <article className="card add-form"><div className="eyebrow">{location}</div><h2>{initial ? "Edit Pokémon" : "Add a Pokémon"}</h2><p>{initial ? `Owned by ${initial.otName || "this save’s trainer"}. Changes are kept in memory until you download the edited save.` : "Create a new encrypted boxed Pokémon owned by this save’s trainer."}</p>
     <div className="sprite-stage"><PokemonSprite editor={editor} species={speciesId} shiny={shiny} className="large" /></div>
     <div className="form-grid">
@@ -51,11 +54,11 @@ function PokemonForm({ editor, location, initial, onSubmit }: { editor: Seaglass
       <label>Gender<select value={gender} disabled={ratio === 0 || ratio >= 254} onChange={e => setGender(e.target.value as "M" | "F" | "N")}><option value="M">Male</option><option value="F">Female</option>{ratio === 255 && <option value="N">Genderless</option>}</select></label>
       <label>Ability<select value={abilitySlot} onChange={e => setAbilitySlot(Number(e.target.value) as 0 | 1)}>{abilities.map(ability => <option key={ability.slot} value={ability.slot}>{ability.name}</option>)}</select></label>
       <label>Held item<select value={heldItem} onChange={e => setHeldItem(Number(e.target.value))}>{heldItems.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-      <label>Friendship<input type="number" min="0" max="255" value={friendship} onChange={e => setFriendship(Number(e.target.value))} /></label>
+      <label>Friendship<input type="number" min="0" max="255" value={friendship} onChange={e => setFriendship(clamp(Number(e.target.value), 0, 255))} /></label>
     </div>
     <label className="shiny-check"><input type="checkbox" checked={shiny} onChange={e => setShiny(e.target.checked)} /> Shiny Pokémon</label>
     <h3>Moves</h3><div className="move-grid">{moveIds.map((moveId, index) => <React.Fragment key={index}><select aria-label={`Move ${index + 1}`} value={moveId} onChange={e => updateArray(setMoveIds, index, Number(e.target.value))}>{moves.map(move => <option key={move.id} value={move.id}>{move.name}</option>)}</select><input aria-label={`Move ${index + 1} PP`} type="number" min="0" max="99" value={pp[index]} onChange={e => updateArray(setPp, index, Number(e.target.value))} /></React.Fragment>)}</div>
-    <h3>IVs and EVs</h3><div className="stats-grid"><span />{["HP","Atk","Def","Spe","SpA","SpD"].map(label => <strong key={label}>{label}</strong>)}<span>IV</span>{ivs.map((value,index) => <input aria-label={`${["HP","Atk","Def","Speed","Special Attack","Special Defense"][index]} IV`} key={`iv${index}`} type="number" min="0" max="31" value={value} onChange={e => updateArray(setIvs,index,Number(e.target.value))} />)}<span>EV</span>{evs.map((value,index) => <input aria-label={`${["HP","Atk","Def","Speed","Special Attack","Special Defense"][index]} EV`} key={`ev${index}`} type="number" min="0" max="252" value={value} onChange={e => updateArray(setEvs,index,Number(e.target.value))} />)}</div>
+    <h3>IVs and EVs</h3><div className="stats-grid"><span />{["HP","Atk","Def","Spe","SpA","SpD"].map(label => <strong key={label}>{label}</strong>)}<span>IV</span>{ivs.map((value,index) => <input aria-label={`${["HP","Atk","Def","Speed","Special Attack","Special Defense"][index]} IV`} key={`iv${index}`} type="number" min="0" max="31" value={value} onChange={e => updateArray(setIvs,index,clamp(Number(e.target.value),0,31))} />)}<span>EV</span>{evs.map((value,index) => <input aria-label={`${["HP","Atk","Def","Speed","Special Attack","Special Defense"][index]} EV`} key={`ev${index}`} type="number" min="0" max={Math.min(252, Math.max(0, 510 - (evTotal - value)))} value={value} onChange={e => updateEv(index,Number(e.target.value))} />)}</div><p className="ev-total">EV total: <strong>{evTotal} / 510</strong> · {Math.max(0, 510 - evTotal)} remaining</p>
     <button className="primary wide" onClick={() => onSubmit({ species: speciesId, nickname, level, nature, gender, shiny, abilitySlot, heldItem, friendship, moves: moveIds, pp, ivs, evs })}>{initial ? "Apply Pokémon Changes" : "Add Pokémon to Empty Slot"}</button>
   </article>;
 }
