@@ -15,6 +15,10 @@ const ITEM_BASE = 0x67e77c;
 const ITEM_STRIDE = 0x54;
 const SPECIES_NAME_1 = 0x8f087c;
 const SPECIES_STRIDE = 0xd0;
+const MOVE_PTR_1 = 0x6d2a18;
+const MOVE_STRIDE = 0x38;
+const ABILITY_BASE = 0x6e15b0;
+const ABILITY_STRIDE = 0x1c;
 const SUBSTRUCT_ORDER = ["GAEM","GAME","GEAM","GEMA","GMAE","GMEA","AGEM","AGME","AEGM","AEMG","AMGE","AMEG","EGAM","EGMA","EAGM","EAMG","EMGA","EMAG","MGAE","MGEA","MAGE","MAEG","MEGA","MEAG"];
 const STAT_KEYS = ["hp", "atk", "def", "spe", "spa", "spd"];
 const NATURE_MOD = Array.from({ length: 25 }, (_, n) => [Math.floor(n / 5), n % 5]);
@@ -22,6 +26,7 @@ const NATURE_MOD = Array.from({ length: 25 }, (_, n) => [Math.floor(n / 5), n % 
 const CHARS = new Map<number, string>([[0," "],[0xae,"-"],[0xad,"."],[0xba,"/"],[0xab,"!"],[0xac,"?"],[0xb4,"'"],[0x1b,"é"]]);
 for (let i = 0; i < 10; i++) CHARS.set(0xa1 + i, String(i));
 for (let i = 0; i < 26; i++) { CHARS.set(0xbb + i, String.fromCharCode(65 + i)); CHARS.set(0xd5 + i, String.fromCharCode(97 + i)); }
+const REVERSE_CHARS = new Map(Array.from(CHARS.entries()).map(([key, value]) => [value, key]));
 
 const u16 = (b: Uint8Array, o: number) => new DataView(b.buffer, b.byteOffset, b.byteLength).getUint16(o, true);
 const u32 = (b: Uint8Array, o: number) => new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(o, true);
@@ -34,6 +39,23 @@ function decodeString(bytes: Uint8Array) {
   return result.trimEnd();
 }
 
+function encodeString(text: string, length: number) {
+  const out = new Uint8Array(length).fill(0xff); let index = 0;
+  for (const char of text.slice(0, length)) { out[index++] = REVERSE_CHARS.get(char) ?? 0; }
+  return out;
+}
+
+function expAt(group: number, level: number) {
+  if (level <= 1) return 0; const cube = level ** 3;
+  if (group === 0) return cube;
+  if (group === 4) return Math.floor(4 * cube / 5);
+  if (group === 5) return Math.floor(5 * cube / 4);
+  if (group === 3) return Math.max(0, Math.floor(6 * cube / 5) - 15 * level ** 2 + 100 * level - 140);
+  if (group === 1) { if (level <= 50) return Math.floor(cube * (100 - level) / 50); if (level <= 68) return Math.floor(cube * (150 - level) / 100); if (level <= 98) return Math.floor(cube * Math.floor((1911 - 10 * level) / 3) / 500); return Math.floor(cube * (160 - level) / 100); }
+  if (group === 2) { if (level <= 15) return Math.floor(cube * (Math.floor((level + 1) / 3) + 24) / 50); if (level <= 36) return Math.floor(cube * (level + 14) / 50); return Math.floor(cube * (Math.floor(level / 2) + 32) / 50); }
+  return cube;
+}
+
 function checksum(block: Uint8Array) {
   let total = 0;
   for (let i = 0; i < block.length; i += 4) total = (total + u32(block, i)) >>> 0;
@@ -42,6 +64,12 @@ function checksum(block: Uint8Array) {
 
 export type Pocket = "items" | "balls";
 export type EditableItem = { id: number; name: string; pocket: Pocket };
+export type NewPokemon = {
+  species: number; nickname: string; level: number; nature: number;
+  gender: "M" | "F" | "N"; shiny: boolean; abilitySlot: 0 | 1;
+  heldItem: number; friendship: number; moves: number[]; pp: number[];
+  ivs: number[]; evs: number[];
+};
 
 export class SeaglassWebSave {
   data: Uint8Array;
@@ -100,6 +128,21 @@ export class SeaglassWebSave {
   itemPocket(id: number) { return this.rom[ITEM_BASE + id * ITEM_STRIDE + 0x2d]; }
   speciesName(id: number) { if (!id) return "Empty"; const off = SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE; return decodeString(this.rom.subarray(off, off + 12)) || `#${id}`; }
   baseStats(id: number) { const off = SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c; return Array.from(this.rom.subarray(off, off + 6)); }
+  genderRatio(id: number) { return this.rom[SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c + 0x12]; }
+  baseFriendship(id: number) { return this.rom[SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c + 0x14]; }
+  growthRate(id: number) { return this.rom[SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c + 0x15]; }
+  abilityName(id: number) { if (!id) return "(none)"; return decodeString(this.rom.subarray(ABILITY_BASE + id * ABILITY_STRIDE, ABILITY_BASE + id * ABILITY_STRIDE + 13)) || `Ability ${id}`; }
+  speciesAbilities(id: number) { const off = SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c + 0x18; const first = u16(this.rom, off), second = u16(this.rom, off + 2); return [{ slot: 0 as const, id: first, name: this.abilityName(first) }, ...(second && second !== first ? [{ slot: 1 as const, id: second, name: this.abilityName(second) }] : [])]; }
+  moveName(id: number) { if (!id) return "—"; const ptr = u32(this.rom, MOVE_PTR_1 + (id - 1) * MOVE_STRIDE); if (ptr < 0x08000000 || ptr >= 0x0a000000) return `Move ${id}`; return decodeString(this.rom.subarray(ptr - 0x08000000, ptr - 0x08000000 + 16)) || `Move ${id}`; }
+  moveList() { const result = [{ id: 0, name: "—" }]; for (let id = 1; id < 1000; id++) { const name = this.moveName(id); if (!name.startsWith("Move ") && /[A-Za-z0-9]/.test(name)) result.push({ id, name }); } return result; }
+  speciesList() {
+    const result: { id: number; name: string }[] = [];
+    for (let id = 1; id < 1300; id++) {
+      const name = this.speciesName(id).trim(), letters = name.replace(/[^A-Za-z]/g, "");
+      if (name.length >= 3 && /^[A-Z]/.test(name) && /^[A-Za-z0-9 .':é♀♂-]+$/.test(name) && /[aeiouyé]/i.test(name) && new Set(letters.toLowerCase()).size > 1) result.push({ id, name });
+    }
+    return result;
+  }
   editableItems() {
     const result: EditableItem[] = [];
     for (let id = 1; id < 1300; id++) {
@@ -153,6 +196,43 @@ export class SeaglassWebSave {
   private monChecksum(dec: Uint8Array) { let sum = 0; for (let i = 0; i < 48; i += 2) sum = (sum + u16(dec, i)) & 0xffff; return sum; }
   private encodeMon(raw: Uint8Array, mon: ReturnType<SeaglassWebSave["decodeMon"]>) {
     const out = raw.slice(); set16(out, 0x1c, this.monChecksum(mon.dec)); const enc = mon.dec.slice(); for (let i = 0; i < 48; i += 4) set32(enc, i, (u32(enc, i) ^ mon.key) >>> 0); out.set(enc, 0x20); return out;
+  }
+
+  private isShiny(pv: number, otid: number) { return (((otid & 0xffff) ^ (otid >>> 16) ^ (pv & 0xffff) ^ (pv >>> 16)) & 0xffff) < 8; }
+  private genderOf(pv: number, species: number) { const ratio = this.genderRatio(species); if (ratio === 255) return "N"; if (ratio === 254) return "F"; if (ratio === 0) return "M"; return (pv & 0xff) < ratio ? "F" : "M"; }
+  private newPv(species: number, otid: number, nature: number, gender: "M" | "F" | "N", shiny: boolean) {
+    const tidSid = (otid & 0xffff) ^ (otid >>> 16);
+    for (let attempt = 0; attempt < 2_000_000; attempt++) {
+      const low = Math.floor(Math.random() * 0x10000); const high = shiny ? (low ^ tidSid ^ Math.floor(Math.random() * 8)) & 0xffff : Math.floor(Math.random() * 0x10000); const pv = ((high << 16) | low) >>> 0;
+      if (pv % 25 === nature && this.genderOf(pv, species) === gender && this.isShiny(pv, otid) === shiny) return pv;
+    }
+    throw new Error("Could not generate the requested nature, gender, and shiny combination.");
+  }
+
+  boxSlots(box = 0) {
+    const storage = this.storage; const result: { index: number; occupied: boolean; species: number; name: string }[] = [];
+    for (let position = 0; position < 30; position++) { const index = box * 30 + position, off = 4 + index * 80, mon = this.decodeMon(storage.slice(off, off + 80)); const occupied = mon.valid && mon.species > 0; result.push({ index, occupied, species: occupied ? mon.species : 0, name: occupied ? this.speciesName(mon.species) : "Empty" }); }
+    return result;
+  }
+
+  addBoxPokemon(index: number, draft: NewPokemon) {
+    if (index < 0 || index >= 420) throw new Error("Invalid PC box slot.");
+    const off = 4 + index * 80, storage = this.storage, current = this.decodeMon(storage.slice(off, off + 80));
+    if (current.valid && current.species) throw new Error("That PC slot is no longer empty.");
+    const sec0 = this.sections.get(0)!; const tid = u16(this.data, sec0 + 0x0a), sid = u16(this.data, sec0 + 0x0c), otid = (tid | (sid << 16)) >>> 0;
+    const ratio = this.genderRatio(draft.species); const fixedGender: "M" | "F" | "N" = ratio === 255 ? "N" : ratio === 254 ? "F" : ratio === 0 ? "M" : draft.gender;
+    const pv = this.newPv(draft.species, otid, Math.max(0, Math.min(24, draft.nature)), fixedGender, draft.shiny);
+    const raw = new Uint8Array(80); set32(raw, 0, pv); set32(raw, 4, otid); raw.set(encodeString(draft.nickname || this.speciesName(draft.species), 10), 8); raw[0x12] = 2; raw.set(this.data.subarray(sec0, sec0 + 7), 0x14);
+    const blocks: Record<string, Uint8Array> = { G: new Uint8Array(12), A: new Uint8Array(12), E: new Uint8Array(12), M: new Uint8Array(12) };
+    for (let templateIndex = 0; templateIndex < 420; templateIndex++) { const templateRaw = storage.slice(4 + templateIndex * 80, 4 + (templateIndex + 1) * 80), template = this.decodeMon(templateRaw); if (template.valid && template.species) { blocks.M.set(template.dec.subarray(template.m, template.m + 12)); raw[0x13] = templateRaw[0x13]; break; } }
+    set16(blocks.G, 0, draft.species); set16(blocks.G, 2, draft.heldItem || 0); set32(blocks.G, 4, expAt(this.growthRate(draft.species), Math.max(1, Math.min(100, draft.level)))); blocks.G[9] = Math.max(0, Math.min(255, draft.friendship));
+    for (let i = 0; i < 4; i++) { set16(blocks.A, i * 2, draft.moves[i] || 0); blocks.A[8 + i] = Math.max(0, Math.min(99, draft.pp[i] || 0)); }
+    for (let i = 0; i < 6; i++) blocks.E[i] = Math.max(0, Math.min(252, draft.evs[i] || 0));
+    blocks.M[0] = 0; blocks.M.fill(0, 8, 12); const level = Math.max(1, Math.min(100, draft.level)); set16(blocks.M, 2, (u16(blocks.M, 2) & 0xff80) | (level & 0x7f));
+    let ivWord = draft.abilitySlot ? 0x80000000 : 0; for (let i = 0; i < 6; i++) ivWord |= (Math.max(0, Math.min(31, draft.ivs[i] ?? 31)) & 31) << (5 * i); set32(blocks.M, 4, ivWord >>> 0);
+    const order = SUBSTRUCT_ORDER[pv % 24], dec = new Uint8Array(48); order.split("").forEach((key, blockIndex) => dec.set(blocks[key], blockIndex * 12));
+    const mon = { pv, otid, key: (pv ^ otid) >>> 0, dec, g: order.indexOf("G") * 12, e: order.indexOf("E") * 12, m: order.indexOf("M") * 12, species: draft.species, valid: true };
+    this.writeStorage(off, this.encodeMon(raw, mon));
   }
   private perfectMon(raw: Uint8Array, party: boolean) {
     const mon = this.decodeMon(raw); if (!mon.valid || mon.species < 1 || mon.species > 1300) return null;
