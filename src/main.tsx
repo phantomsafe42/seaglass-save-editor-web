@@ -95,7 +95,7 @@ function App() {
 
   return <main className="shell">
     <header className="topbar">
-      <div className="brand"><span className="gem">◇</span><div><h1>Seaglass Save Editor</h1><p>Private, local, checksum-safe</p></div></div>
+      <div className="brand"><div><h1>Seaglass Save Editor</h1><p>Private, local, checksum-safe</p></div></div>
       <div className="toolbar">
         <input ref={romInput} hidden type="file" accept=".gba" onChange={e => chooseRom(e.target.files?.[0])} />
         <input ref={saveInput} hidden type="file" accept=".sav,.srm" onChange={e => chooseSave(e.target.files?.[0])} />
@@ -120,7 +120,11 @@ function App() {
       {editor && tab === "bag" && <div className="single-card"><article className="card"><div className="eyebrow">Bag quantities</div><h2>Add or update an item</h2><div className="form-row"><label>Item<select value={selected?.id ?? 0} onChange={e => setSelectedId(Number(e.target.value))}>{items.map(item => <option key={item.id} value={item.id}>{item.name} · {item.pocket === "balls" ? "Balls" : "Items"}</option>)}</select></label><label>Quantity<input type="number" min="0" max="99" value={quantity} onChange={e => setQuantity(Number(e.target.value))} /></label></div><p className="current">Current quantity: {selected ? editor.bagQuantity(selected.id, selected.pocket) : 0}</p><button className="primary" disabled={!selected} onClick={() => selected && mutate(e => { e.setBagQuantity(selected.id, quantity, selected.pocket); return `${selected.name} set to ${Math.max(0, Math.min(99, quantity))}`; })}>Add / Update Item</button></article></div>}
       {editor && tab === "pokemon" && <div className="pokemon-layout"><article className="card box-browser"><div className="eyebrow">PC storage</div><div className="box-heading"><h2>Box {box + 1}</h2><select aria-label="PC Box" value={box} onChange={e => { setBox(Number(e.target.value)); setBoxSlot(null); }}>{Array.from({length:14},(_,index) => <option value={index} key={index}>Box {index + 1}</option>)}</select></div><p>Choose an empty slot to create a new Pokémon.</p><div className="box-grid">{editor.boxSlots(box).map((slot, index) => <button key={slot.index} className={`${slot.occupied ? "occupied" : "empty-slot"} ${boxSlot === slot.index ? "selected" : ""}`} onClick={() => { if (!slot.occupied) setBoxSlot(slot.index); else setNotice(`${slot.name} already occupies Box ${box + 1}, Slot ${index + 1}.`); }}><span>{index + 1}</span><strong>{slot.name}</strong></button>)}</div></article>{boxSlot == null ? <article className="card slot-help"><div className="empty-gem">◇</div><h2>Select an empty slot</h2><p>The new Pokémon editor will appear here. Occupied slots are protected from accidental replacement.</p></article> : <AddPokemonForm key={boxSlot} editor={editor} slot={boxSlot} onAdd={addPokemon} />}</div>}
     </section>
-    <footer><span>{notice}</span><span>{saveBuffer ? saveName : "No save open"}</span></footer>
+    <footer>
+      <span>{notice}</span>
+      <span className="credits"><span>by phantomsafe</span><span>original by Ehsan516</span></span>
+      <span>{saveBuffer ? saveName : "No save open"}</span>
+    </footer>
   </main>;
 }
 
