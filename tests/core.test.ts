@@ -14,6 +14,33 @@ assert.deepEqual(editor.verifyChecksums(), []);
 assert.equal(editor.editableItems().filter(item => item.pocket === "balls").length, 27);
 assert.equal(editor.pokemonSummary().length, 10);
 
+const party = editor.partyPokemon();
+assert.equal(party.length, 6);
+const sprite = editor.spriteRgba(party[0].species, party[0].shiny);
+assert.ok(sprite);
+assert.deepEqual([sprite.width, sprite.height], [64, 64]);
+assert.ok(sprite.pixels.some((value, index) => index % 4 === 3 && value > 0));
+
+const editedParty = { ...party[0], nickname: "WEBEDIT", level: Math.min(100, party[0].level + 1), nature: (party[0].nature + 1) % 25, ivs: [30, 29, 28, 27, 26, 25], evs: [1, 2, 3, 4, 5, 6] };
+editor.updatePokemon(party[0].location, editedParty);
+const partyAfter = editor.partyPokemon()[0];
+assert.equal(partyAfter.nickname, "WEBEDIT");
+assert.equal(partyAfter.level, editedParty.level);
+assert.equal(partyAfter.nature, editedParty.nature);
+assert.deepEqual(partyAfter.ivs, editedParty.ivs);
+assert.deepEqual(partyAfter.evs, editedParty.evs);
+assert.deepEqual(editor.verifyChecksums(), []);
+
+const firstBox = editor.boxPokemon(0);
+assert.ok(firstBox);
+editor.updatePokemon(firstBox.location, { ...firstBox, nickname: "BOXEDIT", level: Math.min(100, firstBox.level + 1), friendship: 123 });
+const boxAfter = editor.boxPokemon(0);
+assert.ok(boxAfter);
+assert.equal(boxAfter.nickname, "BOXEDIT");
+assert.equal(boxAfter.level, Math.min(100, firstBox.level + 1));
+assert.equal(boxAfter.friendship, 123);
+assert.deepEqual(editor.verifyChecksums(), []);
+
 const emptySlot = editor.boxSlots(0).find(slot => !slot.occupied);
 assert.ok(emptySlot);
 editor.addBoxPokemon(emptySlot.index, {

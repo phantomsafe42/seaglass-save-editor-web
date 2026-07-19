@@ -9,13 +9,13 @@ A private, browser-based save editor for **Pokémon Emerald Seaglass**. The ROM 
 - Add/update any ordinary Bag item or Poké Ball to a maximum of 99
 - Add 99 essentials and route all 27 Ball types between the Bag and PC
 - Set all party and boxed Pokémon IVs to 31
+- Browse the full party and all 14 PC boxes with normal or shiny sprites decoded from the selected ROM
+- Edit existing party and boxed Pokémon, including species, nickname, level, nature, gender, shininess, ability, held item, moves, PP, friendship, IVs, and EVs
 - Select any empty PC box slot and create a new Pokémon with species, nickname, level, nature, gender, shininess, ability, held item, moves, PP, friendship, IVs, and EVs
-- Recalculate party battle stats after IV changes
+- Recalculate party battle stats after Pokémon or IV changes
 - Validate and repair Emerald section checksums after every edit
 - Remember the user-supplied Seaglass ROM in local browser storage
 - Download a new edited save without overwriting the original
-
-Existing Pokémon editing is being ported from the Python/PySide editor next; empty-slot creation is already available.
 
 ## Privacy
 

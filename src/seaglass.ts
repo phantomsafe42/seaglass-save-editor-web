@@ -70,6 +70,11 @@ export type NewPokemon = {
   heldItem: number; friendship: number; moves: number[]; pp: number[];
   ivs: number[]; evs: number[];
 };
+export type PokemonLocation = { kind: "party"; index: number } | { kind: "box"; index: number };
+export type PokemonRecord = NewPokemon & {
+  location: PokemonLocation; otName: string; isEgg: boolean;
+};
+export type SpriteData = { width: number; height: number; pixels: Uint8ClampedArray };
 
 export class SeaglassWebSave {
   data: Uint8Array;
@@ -77,6 +82,7 @@ export class SeaglassWebSave {
   sections = new Map<number, number>();
   activeSlot = -1;
   saveCounter = -1;
+  private spriteCache = new Map<string, SpriteData | null>();
 
   constructor(save: ArrayBuffer, rom: ArrayBuffer) {
     this.data = new Uint8Array(save.slice(0));
@@ -143,6 +149,14 @@ export class SeaglassWebSave {
     }
     return result;
   }
+  itemList() {
+    const result = [{ id: 0, name: "(none)" }];
+    for (let id = 1; id < 1300; id++) {
+      const name = this.itemName(id);
+      if (name && !name.startsWith("item") && /[A-Za-z0-9]/.test(name)) result.push({ id, name });
+    }
+    return result;
+  }
   editableItems() {
     const result: EditableItem[] = [];
     for (let id = 1; id < 1300; id++) {
@@ -190,8 +204,8 @@ export class SeaglassWebSave {
   private decodeMon(raw: Uint8Array) {
     const pv = u32(raw, 0), otid = u32(raw, 4), key = (pv ^ otid) >>> 0; const dec = raw.slice(0x20, 0x50);
     for (let i = 0; i < 48; i += 4) set32(dec, i, (u32(dec, i) ^ key) >>> 0);
-    const order = SUBSTRUCT_ORDER[pv % 24]; const g = order.indexOf("G") * 12; const e = order.indexOf("E") * 12; const m = order.indexOf("M") * 12;
-    return { pv, otid, key, dec, g, e, m, species: u16(dec, g), valid: u16(raw, 0x1c) === this.monChecksum(dec) };
+    const order = SUBSTRUCT_ORDER[pv % 24]; const g = order.indexOf("G") * 12; const a = order.indexOf("A") * 12; const e = order.indexOf("E") * 12; const m = order.indexOf("M") * 12;
+    return { pv, otid, key, dec, g, a, e, m, species: u16(dec, g), valid: u16(raw, 0x1c) === this.monChecksum(dec) };
   }
   private monChecksum(dec: Uint8Array) { let sum = 0; for (let i = 0; i < 48; i += 2) sum = (sum + u16(dec, i)) & 0xffff; return sum; }
   private encodeMon(raw: Uint8Array, mon: ReturnType<SeaglassWebSave["decodeMon"]>) {
@@ -209,10 +223,109 @@ export class SeaglassWebSave {
     throw new Error("Could not generate the requested nature, gender, and shiny combination.");
   }
 
-  boxSlots(box = 0) {
-    const storage = this.storage; const result: { index: number; occupied: boolean; species: number; name: string }[] = [];
-    for (let position = 0; position < 30; position++) { const index = box * 30 + position, off = 4 + index * 80, mon = this.decodeMon(storage.slice(off, off + 80)); const occupied = mon.valid && mon.species > 0; result.push({ index, occupied, species: occupied ? mon.species : 0, name: occupied ? this.speciesName(mon.species) : "Empty" }); }
+  private levelFromExperience(species: number, experience: number) {
+    const group = this.growthRate(species); let level = 1;
+    for (let candidate = 2; candidate <= 100; candidate++) { if (expAt(group, candidate) > experience) break; level = candidate; }
+    return level;
+  }
+  private record(raw: Uint8Array, location: PokemonLocation): PokemonRecord | null {
+    const mon = this.decodeMon(raw);
+    if (!mon.valid || mon.species < 1 || mon.species > 1300) return null;
+    const ivWord = u32(mon.dec, mon.m + 4), experience = u32(mon.dec, mon.g + 4);
+    return {
+      location, species: mon.species, nickname: decodeString(raw.subarray(8, 0x12)),
+      level: location.kind === "party" ? Math.max(1, raw[0x54]) : this.levelFromExperience(mon.species, experience),
+      nature: mon.pv % 25, gender: this.genderOf(mon.pv, mon.species) as "M" | "F" | "N",
+      shiny: this.isShiny(mon.pv, mon.otid), abilitySlot: ((ivWord >>> 31) & 1) as 0 | 1,
+      heldItem: u16(mon.dec, mon.g + 2), friendship: mon.dec[mon.g + 9],
+      moves: Array.from({ length: 4 }, (_, i) => u16(mon.dec, mon.a + i * 2)),
+      pp: Array.from(mon.dec.subarray(mon.a + 8, mon.a + 12)),
+      ivs: Array.from({ length: 6 }, (_, i) => (ivWord >>> (5 * i)) & 31),
+      evs: Array.from(mon.dec.subarray(mon.e, mon.e + 6)),
+      otName: decodeString(raw.subarray(0x14, 0x1b)), isEgg: Boolean(ivWord & 0x40000000),
+    };
+  }
+  partyPokemon() {
+    const sb1 = this.sb1, count = Math.min(u32(sb1, PARTY_COUNT_OFF), 6), result: PokemonRecord[] = [];
+    for (let index = 0; index < count; index++) { const mon = this.record(sb1.slice(PARTY_OFF + index * 100, PARTY_OFF + (index + 1) * 100), { kind: "party", index }); if (mon) result.push(mon); }
     return result;
+  }
+  boxPokemon(index: number) {
+    if (index < 0 || index >= 420) return null;
+    return this.record(this.storage.slice(4 + index * 80, 4 + (index + 1) * 80), { kind: "box", index });
+  }
+
+  boxSlots(box = 0) {
+    const result: { index: number; occupied: boolean; species: number; name: string; nickname: string; level: number; shiny: boolean }[] = [];
+    for (let position = 0; position < 30; position++) { const index = box * 30 + position, mon = this.boxPokemon(index), occupied = Boolean(mon); result.push({ index, occupied, species: mon?.species ?? 0, name: mon ? this.speciesName(mon.species) : "Empty", nickname: mon?.nickname ?? "", level: mon?.level ?? 0, shiny: mon?.shiny ?? false }); }
+    return result;
+  }
+
+  updatePokemon(location: PokemonLocation, draft: NewPokemon) {
+    const party = location.kind === "party", size = party ? 100 : 80;
+    const logicalOff = party ? PARTY_OFF + location.index * 100 : 4 + location.index * 80;
+    const source = party ? this.sb1 : this.storage, raw = source.slice(logicalOff, logicalOff + size), current = this.decodeMon(raw);
+    if (!current.valid || !current.species) throw new Error("That Pokémon could not be read.");
+    const species = Math.max(1, Math.min(1300, Math.trunc(draft.species))), nature = Math.max(0, Math.min(24, Math.trunc(draft.nature)));
+    const ratio = this.genderRatio(species), gender: "M" | "F" | "N" = ratio === 255 ? "N" : ratio === 254 ? "F" : ratio === 0 ? "M" : draft.gender;
+    const pvMatches = current.pv % 25 === nature && this.genderOf(current.pv, species) === gender && this.isShiny(current.pv, current.otid) === draft.shiny;
+    const pv = pvMatches ? current.pv : this.newPv(species, current.otid, nature, gender, draft.shiny);
+    const blocks: Record<string, Uint8Array> = {
+      G: current.dec.slice(current.g, current.g + 12), A: current.dec.slice(current.a, current.a + 12),
+      E: current.dec.slice(current.e, current.e + 12), M: current.dec.slice(current.m, current.m + 12),
+    };
+    const level = Math.max(1, Math.min(100, Math.trunc(draft.level)));
+    set16(blocks.G, 0, species); set16(blocks.G, 2, Math.max(0, Math.trunc(draft.heldItem)));
+    set32(blocks.G, 4, expAt(this.growthRate(species), level)); blocks.G[9] = Math.max(0, Math.min(255, Math.trunc(draft.friendship)));
+    for (let i = 0; i < 4; i++) { set16(blocks.A, i * 2, Math.max(0, Math.trunc(draft.moves[i] || 0))); blocks.A[8 + i] = Math.max(0, Math.min(99, Math.trunc(draft.pp[i] || 0))); }
+    for (let i = 0; i < 6; i++) blocks.E[i] = Math.max(0, Math.min(252, Math.trunc(draft.evs[i] || 0)));
+    let ivWord = u32(blocks.M, 4) & 0x40000000; if (draft.abilitySlot) ivWord |= 0x80000000;
+    for (let i = 0; i < 6; i++) ivWord |= (Math.max(0, Math.min(31, Math.trunc(draft.ivs[i] ?? 0))) & 31) << (5 * i);
+    set32(blocks.M, 4, ivWord >>> 0);
+    const order = SUBSTRUCT_ORDER[pv % 24], dec = new Uint8Array(48); order.split("").forEach((key, blockIndex) => dec.set(blocks[key], blockIndex * 12));
+    set32(raw, 0, pv); raw.set(encodeString(draft.nickname || this.speciesName(species), 10), 8);
+    const changed = { pv, otid: current.otid, key: (pv ^ current.otid) >>> 0, dec, g: order.indexOf("G") * 12, a: order.indexOf("A") * 12, e: order.indexOf("E") * 12, m: order.indexOf("M") * 12, species, valid: true };
+    const out = this.encodeMon(raw, changed);
+    if (party) {
+      out[0x54] = level; const base = this.baseStats(species), [boost, lower] = NATURE_MOD[nature];
+      const core = (i: number) => Math.floor((2 * base[i] + (draft.ivs[i] || 0) + Math.floor((draft.evs[i] || 0) / 4)) * level / 100);
+      const stats = [species === 292 ? 1 : core(0) + level + 10];
+      for (let i = 1; i < 6; i++) { let value = core(i) + 5; if (boost !== lower) value = i - 1 === boost ? Math.floor(value * 1.1) : i - 1 === lower ? Math.floor(value * .9) : value; stats.push(value); }
+      [stats[0], ...stats].forEach((value, i) => set16(out, 0x56 + i * 2, value));
+    }
+    if (party) this.writeSb1(logicalOff, out); else this.writeStorage(logicalOff, out);
+  }
+
+  private lz77(offset: number) {
+    if (offset < 0 || offset + 4 > this.rom.length || this.rom[offset] !== 0x10) return null;
+    const size = this.rom[offset + 1] | (this.rom[offset + 2] << 8) | (this.rom[offset + 3] << 16);
+    if (!size || size > 0x4000) return null;
+    const out: number[] = []; let cursor = offset + 4;
+    try {
+      while (out.length < size) {
+        const flags = this.rom[cursor++];
+        for (let bit = 0; bit < 8 && out.length < size; bit++) {
+          if (flags & (0x80 >> bit)) { const hi = this.rom[cursor++], lo = this.rom[cursor++], length = (hi >>> 4) + 3, distance = ((hi & 15) << 8 | lo) + 1; if (distance > out.length) return null; for (let i = 0; i < length && out.length < size; i++) out.push(out[out.length - distance]); }
+          else out.push(this.rom[cursor++]);
+        }
+      }
+    } catch { return null; }
+    return new Uint8Array(out);
+  }
+  spriteRgba(species: number, shiny = false): SpriteData | null {
+    const key = `${species}:${shiny ? 1 : 0}`; if (this.spriteCache.has(key)) return this.spriteCache.get(key)!;
+    try {
+      const base = SPECIES_NAME_1 + (species - 1) * SPECIES_STRIDE - 0x2c;
+      const pic = u32(this.rom, base + 0x58) - 0x08000000, palettePtr = u32(this.rom, base + (shiny ? 0x70 : 0x68)) - 0x08000000;
+      const tiles = this.lz77(pic), paletteBytes = this.lz77(palettePtr); if (!tiles || !paletteBytes || tiles.length < 2048 || paletteBytes.length < 32) { this.spriteCache.set(key, null); return null; }
+      const palette = Array.from({ length: 16 }, (_, i) => { const color = paletteBytes[i * 2] | (paletteBytes[i * 2 + 1] << 8); return [(color & 31) * 255 / 31, ((color >>> 5) & 31) * 255 / 31, ((color >>> 10) & 31) * 255 / 31, i ? 255 : 0]; });
+      const pixels = new Uint8ClampedArray(64 * 64 * 4);
+      for (let ty = 0; ty < 8; ty++) for (let tx = 0; tx < 8; tx++) for (let row = 0; row < 8; row++) for (let column = 0; column < 4; column++) {
+        const packed = tiles[(ty * 8 + tx) * 32 + row * 4 + column];
+        for (let half = 0; half < 2; half++) { const color = palette[half ? packed >>> 4 : packed & 15], pixel = ((ty * 8 + row) * 64 + tx * 8 + column * 2 + half) * 4; pixels.set(color, pixel); }
+      }
+      const sprite = { width: 64, height: 64, pixels }; this.spriteCache.set(key, sprite); return sprite;
+    } catch { this.spriteCache.set(key, null); return null; }
   }
 
   addBoxPokemon(index: number, draft: NewPokemon) {
@@ -231,7 +344,7 @@ export class SeaglassWebSave {
     blocks.M[0] = 0; blocks.M.fill(0, 8, 12); const level = Math.max(1, Math.min(100, draft.level)); set16(blocks.M, 2, (u16(blocks.M, 2) & 0xff80) | (level & 0x7f));
     let ivWord = draft.abilitySlot ? 0x80000000 : 0; for (let i = 0; i < 6; i++) ivWord |= (Math.max(0, Math.min(31, draft.ivs[i] ?? 31)) & 31) << (5 * i); set32(blocks.M, 4, ivWord >>> 0);
     const order = SUBSTRUCT_ORDER[pv % 24], dec = new Uint8Array(48); order.split("").forEach((key, blockIndex) => dec.set(blocks[key], blockIndex * 12));
-    const mon = { pv, otid, key: (pv ^ otid) >>> 0, dec, g: order.indexOf("G") * 12, e: order.indexOf("E") * 12, m: order.indexOf("M") * 12, species: draft.species, valid: true };
+    const mon = { pv, otid, key: (pv ^ otid) >>> 0, dec, g: order.indexOf("G") * 12, a: order.indexOf("A") * 12, e: order.indexOf("E") * 12, m: order.indexOf("M") * 12, species: draft.species, valid: true };
     this.writeStorage(off, this.encodeMon(raw, mon));
   }
   private perfectMon(raw: Uint8Array, party: boolean) {

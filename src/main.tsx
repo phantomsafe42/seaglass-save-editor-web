@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { NewPokemon, SeaglassWebSave } from "./seaglass";
+import { NewPokemon, PokemonLocation, PokemonRecord, SeaglassWebSave } from "./seaglass";
 import "./styles.css";
 
 type Tab = "auto" | "pokemon" | "bag";
+type PokemonSelection = PokemonLocation | { kind: "empty"; index: number };
 const DB_NAME = "seaglass-editor";
 const NATURES = ["Hardy","Lonely","Brave","Adamant","Naughty","Bold","Docile","Relaxed","Impish","Lax","Timid","Hasty","Serious","Jolly","Naive","Modest","Mild","Quiet","Bashful","Rash","Calm","Gentle","Sassy","Careful","Quirky"];
 
@@ -21,17 +22,29 @@ function romStore(mode: "get" | "put", value?: ArrayBuffer): Promise<ArrayBuffer
   });
 }
 
-function AddPokemonForm({ editor, slot, onAdd }: { editor: SeaglassWebSave; slot: number; onAdd: (draft: NewPokemon) => void }) {
+function PokemonSprite({ editor, species, shiny = false, className = "" }: { editor: SeaglassWebSave; species: number; shiny?: boolean; className?: string }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const sprite = editor.spriteRgba(species, shiny), context = canvas.current?.getContext("2d");
+    if (!sprite || !context) return;
+    context.clearRect(0, 0, 64, 64); context.putImageData(new ImageData(new Uint8ClampedArray(sprite.pixels), sprite.width, sprite.height), 0, 0);
+  }, [editor, species, shiny]);
+  return <canvas ref={canvas} width="64" height="64" className={`pokemon-sprite ${className}`} role="img" aria-label={`${shiny ? "Shiny " : ""}${editor.speciesName(species)}`} />;
+}
+
+function PokemonForm({ editor, location, initial, onSubmit }: { editor: SeaglassWebSave; location: string; initial?: PokemonRecord; onSubmit: (draft: NewPokemon) => void }) {
   const species = useMemo(() => editor.speciesList(), [editor]);
   const moves = useMemo(() => editor.moveList(), [editor]);
-  const heldItems = useMemo(() => [{ id: 0, name: "(none)" }, ...editor.editableItems()], [editor]);
-  const [speciesId, setSpeciesId] = useState(species[0]?.id ?? 1), [nickname, setNickname] = useState(""), [level, setLevel] = useState(5), [nature, setNature] = useState(0), [gender, setGender] = useState<"M" | "F" | "N">("M"), [shiny, setShiny] = useState(false), [abilitySlot, setAbilitySlot] = useState<0 | 1>(0), [heldItem, setHeldItem] = useState(0), [friendship, setFriendship] = useState(70), [moveIds, setMoveIds] = useState([0,0,0,0]), [pp, setPp] = useState([0,0,0,0]), [ivs, setIvs] = useState([31,31,31,31,31,31]), [evs, setEvs] = useState([0,0,0,0,0,0]);
+  const heldItems = useMemo(() => editor.itemList(), [editor]);
+  const defaultSpecies = species[0]?.id ?? 1;
+  const [speciesId, setSpeciesId] = useState(initial?.species ?? defaultSpecies), [nickname, setNickname] = useState(initial?.nickname ?? editor.speciesName(defaultSpecies)), [level, setLevel] = useState(initial?.level ?? 5), [nature, setNature] = useState(initial?.nature ?? 0), [gender, setGender] = useState<"M" | "F" | "N">(initial?.gender ?? "M"), [shiny, setShiny] = useState(initial?.shiny ?? false), [abilitySlot, setAbilitySlot] = useState<0 | 1>(initial?.abilitySlot ?? 0), [heldItem, setHeldItem] = useState(initial?.heldItem ?? 0), [friendship, setFriendship] = useState(initial?.friendship ?? editor.baseFriendship(defaultSpecies)), [moveIds, setMoveIds] = useState(initial?.moves ?? [0,0,0,0]), [pp, setPp] = useState(initial?.pp ?? [0,0,0,0]), [ivs, setIvs] = useState(initial?.ivs ?? [31,31,31,31,31,31]), [evs, setEvs] = useState(initial?.evs ?? [0,0,0,0,0,0]);
   const abilities = editor.speciesAbilities(speciesId), ratio = editor.genderRatio(speciesId);
-  useEffect(() => { setNickname(editor.speciesName(speciesId)); setFriendship(editor.baseFriendship(speciesId)); setAbilitySlot(0); if (ratio === 255) setGender("N"); else if (ratio === 254) setGender("F"); else if (ratio === 0) setGender("M"); }, [speciesId]);
+  function changeSpecies(id: number) { const nextRatio = editor.genderRatio(id); setSpeciesId(id); setNickname(editor.speciesName(id)); setFriendship(editor.baseFriendship(id)); setAbilitySlot(0); if (nextRatio === 255) setGender("N"); else if (nextRatio === 254) setGender("F"); else if (nextRatio === 0) setGender("M"); else if (gender === "N") setGender("M"); }
   const updateArray = (setter: React.Dispatch<React.SetStateAction<number[]>>, index: number, value: number) => setter(current => current.map((entry, i) => i === index ? value : entry));
-  return <article className="card add-form"><div className="eyebrow">Box {Math.floor(slot / 30) + 1} · Slot {slot % 30 + 1}</div><h2>Add a Pokémon</h2><p>Create a new encrypted boxed Pokémon owned by this save’s trainer.</p>
+  return <article className="card add-form"><div className="eyebrow">{location}</div><h2>{initial ? "Edit Pokémon" : "Add a Pokémon"}</h2><p>{initial ? `Owned by ${initial.otName || "this save’s trainer"}. Changes are kept in memory until you download the edited save.` : "Create a new encrypted boxed Pokémon owned by this save’s trainer."}</p>
+    <div className="sprite-stage"><PokemonSprite editor={editor} species={speciesId} shiny={shiny} className="large" /></div>
     <div className="form-grid">
-      <label>Species<select value={speciesId} onChange={e => setSpeciesId(Number(e.target.value))}>{species.map(entry => <option key={entry.id} value={entry.id}>{entry.name} · #{entry.id}</option>)}</select></label>
+      <label>Species<select value={speciesId} onChange={e => changeSpecies(Number(e.target.value))}>{species.map(entry => <option key={entry.id} value={entry.id}>{entry.name} · #{entry.id}</option>)}</select></label>
       <label>Nickname<input maxLength={10} value={nickname} onChange={e => setNickname(e.target.value)} /></label>
       <label>Level<input type="number" min="1" max="100" value={level} onChange={e => setLevel(Number(e.target.value))} /></label>
       <label>Nature<select value={nature} onChange={e => setNature(Number(e.target.value))}>{NATURES.map((name, index) => <option key={name} value={index}>{name}</option>)}</select></label>
@@ -43,7 +56,7 @@ function AddPokemonForm({ editor, slot, onAdd }: { editor: SeaglassWebSave; slot
     <label className="shiny-check"><input type="checkbox" checked={shiny} onChange={e => setShiny(e.target.checked)} /> Shiny Pokémon</label>
     <h3>Moves</h3><div className="move-grid">{moveIds.map((moveId, index) => <React.Fragment key={index}><select aria-label={`Move ${index + 1}`} value={moveId} onChange={e => updateArray(setMoveIds, index, Number(e.target.value))}>{moves.map(move => <option key={move.id} value={move.id}>{move.name}</option>)}</select><input aria-label={`Move ${index + 1} PP`} type="number" min="0" max="99" value={pp[index]} onChange={e => updateArray(setPp, index, Number(e.target.value))} /></React.Fragment>)}</div>
     <h3>IVs and EVs</h3><div className="stats-grid"><span />{["HP","Atk","Def","Spe","SpA","SpD"].map(label => <strong key={label}>{label}</strong>)}<span>IV</span>{ivs.map((value,index) => <input aria-label={`${["HP","Atk","Def","Speed","Special Attack","Special Defense"][index]} IV`} key={`iv${index}`} type="number" min="0" max="31" value={value} onChange={e => updateArray(setIvs,index,Number(e.target.value))} />)}<span>EV</span>{evs.map((value,index) => <input aria-label={`${["HP","Atk","Def","Speed","Special Attack","Special Defense"][index]} EV`} key={`ev${index}`} type="number" min="0" max="252" value={value} onChange={e => updateArray(setEvs,index,Number(e.target.value))} />)}</div>
-    <button className="primary wide" onClick={() => onAdd({ species: speciesId, nickname, level, nature, gender, shiny, abilitySlot, heldItem, friendship, moves: moveIds, pp, ivs, evs })}>Add Pokémon to Empty Slot</button>
+    <button className="primary wide" onClick={() => onSubmit({ species: speciesId, nickname, level, nature, gender, shiny, abilitySlot, heldItem, friendship, moves: moveIds, pp, ivs, evs })}>{initial ? "Apply Pokémon Changes" : "Add Pokémon to Empty Slot"}</button>
   </article>;
 }
 
@@ -57,7 +70,7 @@ function App() {
   const [notice, setNotice] = useState("Choose your Seaglass ROM once, then open a save.");
   const [selectedId, setSelectedId] = useState(0);
   const [quantity, setQuantity] = useState(99);
-  const [box, setBox] = useState(0), [boxSlot, setBoxSlot] = useState<number | null>(null);
+  const [box, setBox] = useState(0), [pokemonSelection, setPokemonSelection] = useState<PokemonSelection | null>(null);
   const saveInput = useRef<HTMLInputElement>(null), romInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => { romStore("get").then(stored => { if (stored) { setRom(stored); setNotice("Remembered Seaglass ROM ready. Open a save to begin."); } }).catch(() => {}); }, []);
@@ -88,10 +101,16 @@ function App() {
     if (!editor) return; const blob = new Blob([new Uint8Array(editor.data).buffer], { type: "application/octet-stream" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = saveName; link.click(); URL.revokeObjectURL(url);
   }
   function addPokemon(draft: NewPokemon) {
-    if (!editor || boxSlot == null) return;
-    try { editor.addBoxPokemon(boxSlot, draft); setEditor(Object.assign(Object.create(Object.getPrototypeOf(editor)), editor)); setNotice(`${editor.speciesName(draft.species)} added to Box ${Math.floor(boxSlot / 30) + 1}, Slot ${boxSlot % 30 + 1} · checksums ${editor.verifyChecksums().length ? "BAD" : "OK"}`); setBoxSlot(null); }
+    if (!editor || pokemonSelection?.kind !== "empty") return; const slot = pokemonSelection.index;
+    try { editor.addBoxPokemon(slot, draft); setEditor(Object.assign(Object.create(Object.getPrototypeOf(editor)), editor)); setNotice(`${editor.speciesName(draft.species)} added to Box ${Math.floor(slot / 30) + 1}, Slot ${slot % 30 + 1} · checksums ${editor.verifyChecksums().length ? "BAD" : "OK"}`); setPokemonSelection({ kind: "box", index: slot }); }
     catch (error) { setNotice(error instanceof Error ? error.message : "The Pokémon could not be added."); }
   }
+  function updatePokemon(draft: NewPokemon) {
+    if (!editor || !pokemonSelection || pokemonSelection.kind === "empty") return;
+    try { editor.updatePokemon(pokemonSelection, draft); setEditor(Object.assign(Object.create(Object.getPrototypeOf(editor)), editor)); const place = pokemonSelection.kind === "party" ? `Party Slot ${pokemonSelection.index + 1}` : `Box ${Math.floor(pokemonSelection.index / 30) + 1}, Slot ${pokemonSelection.index % 30 + 1}`; setNotice(`${editor.speciesName(draft.species)} updated in ${place} · checksums ${editor.verifyChecksums().length ? "BAD" : "OK"}`); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "The Pokémon could not be updated."); }
+  }
+  const selectedPokemon = editor && pokemonSelection && pokemonSelection.kind !== "empty" ? (pokemonSelection.kind === "party" ? editor.partyPokemon().find(mon => mon.location.index === pokemonSelection.index) ?? null : editor.boxPokemon(pokemonSelection.index)) : null;
 
   return <main className="shell">
     <header className="topbar">
@@ -118,7 +137,7 @@ function App() {
         <article className="card"><div className="eyebrow">Pokémon IVs</div><h2>Perfect every Pokémon</h2><p>Sets all six IVs to 31 for every party and boxed Pokémon. Party battle stats are recalculated from the selected Seaglass ROM.</p><button className="primary wide" onClick={() => mutate(e => { const count = e.maxAllIvs(); return `Maxed IVs for ${count.party} party and ${count.boxed} boxed Pokémon`; })}>Max IVs for All Pokémon</button></article>
       </div>}
       {editor && tab === "bag" && <div className="single-card"><article className="card"><div className="eyebrow">Bag quantities</div><h2>Add or update an item</h2><div className="form-row"><label>Item<select value={selected?.id ?? 0} onChange={e => setSelectedId(Number(e.target.value))}>{items.map(item => <option key={item.id} value={item.id}>{item.name} · {item.pocket === "balls" ? "Balls" : "Items"}</option>)}</select></label><label>Quantity<input type="number" min="0" max="99" value={quantity} onChange={e => setQuantity(Number(e.target.value))} /></label></div><p className="current">Current quantity: {selected ? editor.bagQuantity(selected.id, selected.pocket) : 0}</p><button className="primary" disabled={!selected} onClick={() => selected && mutate(e => { e.setBagQuantity(selected.id, quantity, selected.pocket); return `${selected.name} set to ${Math.max(0, Math.min(99, quantity))}`; })}>Add / Update Item</button></article></div>}
-      {editor && tab === "pokemon" && <div className="pokemon-layout"><article className="card box-browser"><div className="eyebrow">PC storage</div><div className="box-heading"><h2>Box {box + 1}</h2><select aria-label="PC Box" value={box} onChange={e => { setBox(Number(e.target.value)); setBoxSlot(null); }}>{Array.from({length:14},(_,index) => <option value={index} key={index}>Box {index + 1}</option>)}</select></div><p>Choose an empty slot to create a new Pokémon.</p><div className="box-grid">{editor.boxSlots(box).map((slot, index) => <button key={slot.index} className={`${slot.occupied ? "occupied" : "empty-slot"} ${boxSlot === slot.index ? "selected" : ""}`} onClick={() => { if (!slot.occupied) setBoxSlot(slot.index); else setNotice(`${slot.name} already occupies Box ${box + 1}, Slot ${index + 1}.`); }}><span>{index + 1}</span><strong>{slot.name}</strong></button>)}</div></article>{boxSlot == null ? <article className="card slot-help"><div className="empty-gem">◇</div><h2>Select an empty slot</h2><p>The new Pokémon editor will appear here. Occupied slots are protected from accidental replacement.</p></article> : <AddPokemonForm key={boxSlot} editor={editor} slot={boxSlot} onAdd={addPokemon} />}</div>}
+      {editor && tab === "pokemon" && <div className="pokemon-layout"><article className="card box-browser"><div className="eyebrow">Pokémon storage</div><h2>Party</h2><p>Select any Pokémon to edit it.</p><div className="party-grid">{editor.partyPokemon().map(mon => <button key={mon.location.index} className={pokemonSelection?.kind === "party" && pokemonSelection.index === mon.location.index ? "selected" : ""} onClick={() => setPokemonSelection(mon.location)}><PokemonSprite editor={editor} species={mon.species} shiny={mon.shiny} /><span>Slot {mon.location.index + 1} · Lv{mon.level}</span><strong>{editor.speciesName(mon.species)}</strong><small>{mon.nickname}</small></button>)}</div><div className="box-heading"><h2>Box {box + 1}</h2><select aria-label="PC Box" value={box} onChange={e => { setBox(Number(e.target.value)); setPokemonSelection(null); }}>{Array.from({length:14},(_,index) => <option value={index} key={index}>Box {index + 1}</option>)}</select></div><p>Select an occupied slot to edit it or an empty slot to add a Pokémon.</p><div className="box-grid">{editor.boxSlots(box).map((slot, index) => <button key={slot.index} className={`${slot.occupied ? "occupied" : "empty-slot"} ${pokemonSelection?.kind !== "party" && pokemonSelection?.index === slot.index ? "selected" : ""}`} onClick={() => setPokemonSelection({ kind: slot.occupied ? "box" : "empty", index: slot.index })}>{slot.occupied ? <PokemonSprite editor={editor} species={slot.species} shiny={slot.shiny} /> : <span className="add-mark">+</span>}<span>{index + 1}{slot.occupied ? ` · Lv${slot.level}` : " · Empty"}</span><strong>{slot.name}</strong>{slot.occupied && <small>{slot.nickname}</small>}</button>)}</div></article>{!pokemonSelection ? <article className="card slot-help"><h2>Select a Pokémon or empty slot</h2><p>Party and occupied box slots open the full editor. Empty box slots open the Add Pokémon form.</p></article> : pokemonSelection.kind === "empty" ? <PokemonForm key={`empty-${pokemonSelection.index}`} editor={editor} location={`Box ${Math.floor(pokemonSelection.index / 30) + 1} · Slot ${pokemonSelection.index % 30 + 1}`} onSubmit={addPokemon} /> : selectedPokemon ? <PokemonForm key={`${pokemonSelection.kind}-${pokemonSelection.index}`} editor={editor} location={pokemonSelection.kind === "party" ? `Party · Slot ${pokemonSelection.index + 1}` : `Box ${Math.floor(pokemonSelection.index / 30) + 1} · Slot ${pokemonSelection.index % 30 + 1}`} initial={selectedPokemon} onSubmit={updatePokemon} /> : null}</div>}
     </section>
     <footer>
       <span>{notice}</span>
