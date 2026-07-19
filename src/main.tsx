@@ -135,7 +135,7 @@ function App() {
     </nav>
 
     <section className="workspace">
-      {!editor && <div className="empty"><div className="empty-gem">◇</div><h2>Bring your own save</h2><p>Your ROM is remembered locally after the first selection. Saves always remain on your device.</p><button className="primary" onClick={() => saveInput.current?.click()} disabled={!rom}>{rom ? "Open a save" : "Choose a ROM first"}</button></div>}
+      {!editor && <div className="empty"><div className="empty-gem">◇</div><h2>Bring your own save</h2><p>Your ROM is remembered locally after the first selection. Saves always remain on your device.</p><button className="primary" onClick={() => rom ? saveInput.current?.click() : romInput.current?.click()}>{rom ? "Open a save" : "Load Seaglass ROM"}</button></div>}
       {editor && tab === "auto" && <div className="cards">
         <article className="card"><div className="eyebrow">Items & Poké Balls</div><h2>Stock the essentials</h2><p>Sets six selected Balls and six essentials to 99 in the Bag. The other 21 Ball types go to PC storage. Existing stacks are updated, never added past 99.</p><button className="primary wide" onClick={() => mutate(e => { e.applyEssentialsPreset(); return "Essentials and all Balls updated"; })}>Add 99 Essentials + All Balls</button></article>
         <article className="card"><div className="eyebrow">Pokémon IVs</div><h2>Perfect every Pokémon</h2><p>Sets all six IVs to 31 for every party and boxed Pokémon. Party battle stats are recalculated from the selected Seaglass ROM.</p><button className="primary wide" onClick={() => mutate(e => { const count = e.maxAllIvs(); return `Maxed IVs for ${count.party} party and ${count.boxed} boxed Pokémon`; })}>Max IVs for All Pokémon</button></article>
