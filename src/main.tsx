@@ -118,7 +118,7 @@ function App() {
 
   return <main className="shell">
     <header className="topbar">
-      <div className="brand"><div><h1>Seaglass Save Editor</h1><p>Private, local, checksum-safe</p></div></div>
+      <div className="brand"><div><div className="title-row"><h1>Seaglass Save Editor</h1><img className="title-sprite" src="https://img.pokemondb.net/sprites/black-white/anim/normal/beldum.gif" alt="Beldum animated sprite" /></div><p>Private, local, checksum-safe</p></div></div>
       <div className="toolbar">
         <input ref={romInput} hidden type="file" accept=".gba" onChange={e => chooseRom(e.target.files?.[0])} />
         <input ref={saveInput} hidden type="file" accept=".sav,.srm" onChange={e => chooseSave(e.target.files?.[0])} />
