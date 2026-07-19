@@ -17,6 +17,9 @@ const FLAGS_OFF = 0x13c0;
 const KEY_OFF = 0xac;
 const ITEM_BASE = 0x67e77c;
 const ITEM_STRIDE = 0x54;
+const LAST_ITEM_ID = 827;
+const ITEM_ICON_PTR_OFF = 0x34;
+const ITEM_ICON_PALETTE_PTR_OFF = 0x38;
 const SPECIES_NAME_1 = 0x8f087c;
 const SPECIES_STRIDE = 0xd0;
 const MOVE_PTR_1 = 0x6d2a18;
@@ -41,6 +44,7 @@ const MACHINE_MOVE_NAMES = [
   "Poison Fang", "Thunder Fang", "Ice Fang", "Fire Fang", "Psychic Fangs", "Stomping Tantrum", "Dazzling Gleam", "Play Rough", "Volt Switch", "U-turn",
   "Cut", "Fly", "Surf", "Strength", "Flash", "Rock Smash", "Waterfall", "Dive",
 ] as const;
+const MOVE_TYPE_NAMES = ["", "Normal", "Fighting", "Flying", "Poison", "Ground", "Rock", "Bug", "Ghost", "Steel", "Mystery", "Fire", "Water", "Grass", "Electric", "Psychic", "Ice", "Dragon", "Dark", "Fairy"] as const;
 
 const CHARS = new Map<number, string>([[0," "],[0xae,"-"],[0xad,"."],[0xba,"/"],[0xab,"!"],[0xac,"?"],[0xb4,"'"],[0x1b,"é"]]);
 for (let i = 0; i < 10; i++) CHARS.set(0xa1 + i, String(i));
@@ -91,17 +95,20 @@ function legalEvs(values: number[]) {
 
 export type Pocket = "items" | "balls";
 export type EditableItem = { id: number; name: string; pocket: Pocket };
+export type InventoryPocket = 1 | 2 | 3 | 4 | 5;
+export type InventoryEntry = { index: number; id: number; name: string; quantity: number; pocket: InventoryPocket };
 export type AbilitySlot = 0 | 1 | 2;
 export type NewPokemon = {
   species: number; nickname: string; level: number; nature: number;
   gender: "M" | "F" | "N"; shiny: boolean; abilitySlot: AbilitySlot;
   heldItem: number; friendship: number; moves: number[]; pp: number[]; ppUps: number[];
   ivs: number[]; evs: number[]; contest: number[]; sheen: number;
+  ball?: number;
   returnedHeldItem?: number; experience?: number; makePartyRoom?: boolean; evolutionMethod?: number;
 };
 export type PokemonLocation = { kind: "party"; index: number } | { kind: "box"; index: number };
 export type PokemonRecord = NewPokemon & {
-  location: PokemonLocation; otName: string; isEgg: boolean;
+  location: PokemonLocation; otName: string; isEgg: boolean; ball: number;
 };
 export type SpriteData = { width: number; height: number; pixels: Uint8ClampedArray };
 export type EvolutionSummary = { text: string; canEvolve: boolean };
@@ -121,6 +128,8 @@ export class SeaglassWebSave {
   activeSlot = -1;
   saveCounter = -1;
   private spriteCache = new Map<string, SpriteData | null>();
+  private itemSpriteCache = new Map<number, SpriteData | null>();
+  private machineTypeCache = new Map<number, string>();
 
   constructor(save: ArrayBuffer, rom: ArrayBuffer) {
     this.data = new Uint8Array(save.slice(0));
@@ -169,6 +178,22 @@ export class SeaglassWebSave {
   private writeStorage(offset: number, payload: Uint8Array) { this.writeLogical(STORAGE_IDS, offset, payload); }
 
   itemName(id: number) { if (!id) return "(none)"; return decodeString(this.rom.subarray(ITEM_BASE + id * ITEM_STRIDE, ITEM_BASE + id * ITEM_STRIDE + 14)) || `item${id}`; }
+  machineNumber(id: number) {
+    if (id >= 582 && id <= 641) return `TM${String(id - 581).padStart(2, "0")}`;
+    if (id >= 682 && id <= 689) return `HM${String(id - 681).padStart(2, "0")}`;
+    return "";
+  }
+  inventoryItemName(id: number) {
+    const machineIndex = id >= 582 && id <= 641 ? id - 582 : id >= 682 && id <= 689 ? id - 622 : -1;
+    return machineIndex >= 0 ? (MACHINE_MOVE_NAMES[machineIndex] ?? this.itemName(id)) : this.itemName(id);
+  }
+  machineType(id: number) {
+    if (this.machineTypeCache.has(id)) return this.machineTypeCache.get(id)!;
+    const machine = this.machineNumber(id), name = this.inventoryItemName(id);
+    if (!machine) return "";
+    const move = this.moveList().find(entry => entry.name === name), typeId = move ? (this.rom[MOVE_PTR_1 + (move.id - 1) * MOVE_STRIDE + 0x0a] & 0x1f) : 0;
+    const type = MOVE_TYPE_NAMES[typeId] ?? ""; this.machineTypeCache.set(id, type); return type;
+  }
   itemPocket(id: number) { return this.rom[ITEM_BASE + id * ITEM_STRIDE + 0x2d]; }
   speciesName(id: number) { if (!id) return "Empty"; const off = SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE; return decodeString(this.rom.subarray(off, off + 12)) || `#${id}`; }
   baseStats(id: number) { const off = SPECIES_NAME_1 + (id - 1) * SPECIES_STRIDE - 0x2c; return Array.from(this.rom.subarray(off, off + 6)); }
@@ -294,7 +319,7 @@ export class SeaglassWebSave {
   }
   itemList() {
     const result = [{ id: 0, name: "(none)" }];
-    for (let id = 1; id < 1300; id++) {
+    for (let id = 1; id <= LAST_ITEM_ID; id++) {
       const name = this.itemName(id);
       if (name && !name.startsWith("item") && /[A-Za-z0-9]/.test(name)) result.push({ id, name });
     }
@@ -310,6 +335,29 @@ export class SeaglassWebSave {
     }
     return result;
   }
+  inventoryCatalog(pocket: InventoryPocket) {
+    const items = this.itemList().slice(1).filter(item => this.itemPocket(item.id) === pocket);
+    const curated = pocket === 3 ? items.filter(item => SEAGLASS_TM_IDS.includes(item.id) || (item.id >= 682 && item.id <= 689)) : items;
+    return curated.map(item => ({ ...item, name: this.inventoryItemName(item.id) }));
+  }
+  bagPocketCapacity(pocket: InventoryPocket) { return BAG_POCKETS.get(pocket)?.[1] ?? 0; }
+  bagPocketItems(pocket: InventoryPocket) {
+    const layout = BAG_POCKETS.get(pocket); if (!layout) return [];
+    const [off, count] = layout, block = this.sb1, key = this.bagKey(), result: InventoryEntry[] = [];
+    for (let index = 0; index < count; index++) { const id = u16(block, off + index * 4); if (!id || this.itemPocket(id) !== pocket) continue; result.push({ index, id, name: this.inventoryItemName(id), quantity: u16(block, off + index * 4 + 2) ^ key, pocket }); }
+    return result;
+  }
+  pcItems(pocket?: InventoryPocket) {
+    const block = this.sb1, result: InventoryEntry[] = [];
+    for (let index = 0; index < 50; index++) {
+      const id = u16(block, PC_ITEMS_OFF + index * 4); if (!id) continue; const itemPocket = this.itemPocket(id) as InventoryPocket;
+      if (!BAG_POCKETS.has(itemPocket)) continue;
+      if (pocket != null && itemPocket !== pocket) continue;
+      result.push({ index, id, name: this.inventoryItemName(id), quantity: u16(block, PC_ITEMS_OFF + index * 4 + 2), pocket: itemPocket });
+    }
+    return result;
+  }
+  pcItemCapacity() { return 50; }
 
   private bagKey() { return u32(this.data, this.sections.get(0)! + KEY_OFF) & 0xffff; }
   bagQuantity(id: number, pocket: Pocket) {
@@ -333,6 +381,15 @@ export class SeaglassWebSave {
     if (!quantity && existing < 0) return; const slot = existing >= 0 ? existing : empty;
     if (slot < 0) throw new Error(`No free slot in the ${["", "Items", "Poké Balls", "TMs", "Berries", "Key Items"][pocket]} pocket.`);
     const payload = new Uint8Array(4); set16(payload, 0, quantity ? id : 0); set16(payload, 2, quantity ? quantity ^ this.bagKey() : 0); this.writeSb1(off + slot * 4, payload);
+  }
+  updateBagItem(originalId: number | null, id: number, quantity: number) {
+    const snapshot = this.data.slice(), pocket = this.itemPocket(id) as InventoryPocket;
+    try {
+      if (!BAG_POCKETS.has(pocket)) throw new Error(`${this.itemName(id)} does not have a supported Bag pocket.`);
+      quantity = pocket === 5 ? Math.max(0, Math.min(1, Math.trunc(quantity))) : Math.max(0, Math.min(99, Math.trunc(quantity)));
+      if (originalId && originalId !== id) this.setBagItemQuantity(originalId, 0);
+      this.setBagItemQuantity(id, quantity);
+    } catch (error) { this.data = snapshot; throw error; }
   }
   bagItemQuantity(id: number) {
     const layout = BAG_POCKETS.get(this.itemPocket(id));
@@ -362,6 +419,29 @@ export class SeaglassWebSave {
     for (let i = 0; i < 50; i++) { const stored = u16(block, PC_ITEMS_OFF + i * 4); if (stored === id) { existing = i; break; } if (!stored && empty < 0) empty = i; }
     if (!quantity && existing < 0) return; const slot = existing >= 0 ? existing : empty; if (slot < 0) throw new Error("No free PC item slot.");
     const payload = new Uint8Array(4); set16(payload, 0, quantity ? id : 0); set16(payload, 2, quantity); this.writeSb1(PC_ITEMS_OFF + slot * 4, payload);
+  }
+  updatePcItem(originalId: number | null, id: number, quantity: number) {
+    const snapshot = this.data.slice();
+    try {
+      const pocket = this.itemPocket(id) as InventoryPocket;
+      if (!BAG_POCKETS.has(pocket)) throw new Error(`${this.itemName(id)} is not a supported inventory item.`);
+      quantity = pocket === 5 ? Math.max(0, Math.min(1, Math.trunc(quantity))) : Math.max(0, Math.min(99, Math.trunc(quantity)));
+      if (originalId && originalId !== id) this.setPcQuantity(originalId, 0);
+      this.setPcQuantity(id, quantity);
+    } catch (error) { this.data = snapshot; throw error; }
+  }
+  transferInventoryItem(id: number, from: "bag" | "pc") {
+    const snapshot = this.data.slice(), pocket = this.itemPocket(id) as InventoryPocket;
+    try {
+      if (!BAG_POCKETS.has(pocket)) throw new Error(`${this.itemName(id)} is not a supported inventory item.`);
+      const sourceQuantity = from === "bag" ? this.bagItemQuantity(id) : this.pcQuantity(id);
+      const destinationQuantity = from === "bag" ? this.pcQuantity(id) : this.bagItemQuantity(id);
+      if (!sourceQuantity) throw new Error(`${this.itemName(id)} is no longer in ${from === "bag" ? "the Bag" : "PC Item Storage"}.`);
+      if (destinationQuantity) throw new Error(`${this.itemName(id)} is already in ${from === "bag" ? "PC Item Storage" : "the Bag"}.`);
+      if (from === "bag") { this.setPcQuantity(id, sourceQuantity); this.setBagItemQuantity(id, 0); }
+      else { this.setBagItemQuantity(id, sourceQuantity); this.setPcQuantity(id, 0); }
+      return sourceQuantity;
+    } catch (error) { this.data = snapshot; throw error; }
   }
 
   applyEssentialsPreset() {
@@ -455,6 +535,7 @@ export class SeaglassWebSave {
       nature: mon.pv % 25, gender: this.genderOf(mon.pv, mon.species) as "M" | "F" | "N",
       shiny: this.isShiny(mon.pv, mon.otid), abilitySlot: (storedAbilitySlot <= 2 ? storedAbilitySlot : 0) as AbilitySlot,
       heldItem: u16(mon.dec, mon.g + 2), friendship: mon.dec[mon.g + 9],
+      ball: u16(mon.dec, mon.g + 10) & 0x3f,
       moves: Array.from({ length: 4 }, (_, i) => u16(mon.dec, mon.a + i * 2) & 0x7ff),
       pp: Array.from({ length: 4 }, (_, i) => mon.dec[mon.a + 8 + i] & 0x7f),
       ppUps: Array.from({ length: 4 }, (_, i) => (mon.dec[mon.g + 8] >>> (i * 2)) & 3),
@@ -529,6 +610,9 @@ export class SeaglassWebSave {
     set32(blocks.G, 4, experienceUpper | (experience & EXPERIENCE_MASK));
     blocks.G[8] = Array.from({ length: 4 }, (_, i) => clampInteger(draft.ppUps[i] ?? 0, 0, 3)).reduce((packed, value, i) => packed | (value << (i * 2)), 0);
     blocks.G[9] = clampInteger(draft.friendship, 0, 255);
+    const ball = draft.ball == null ? u16(blocks.G, 10) & 0x3f : clampInteger(draft.ball, 0, 63);
+    if (ball && this.itemPocket(ball) !== 2) throw new Error(`${this.itemName(ball)} is not a Poké Ball.`);
+    set16(blocks.G, 10, (u16(blocks.G, 10) & 0xffc0) | ball);
     for (let i = 0; i < 4; i++) {
       const move = clampInteger(draft.moves[i] ?? 0, 0, 0x7ff), preserved = u16(blocks.A, i * 2) & 0xf800;
       set16(blocks.A, i * 2, preserved | move);
@@ -573,11 +657,11 @@ export class SeaglassWebSave {
     } catch { return null; }
     return new Uint8Array(out);
   }
-  spriteRgba(species: number, shiny = false): SpriteData | null {
-    const key = `${species}:${shiny ? 1 : 0}`; if (this.spriteCache.has(key)) return this.spriteCache.get(key)!;
+  spriteRgba(species: number, shiny = false, back = false): SpriteData | null {
+    const key = `${species}:${shiny ? 1 : 0}:${back ? 1 : 0}`; if (this.spriteCache.has(key)) return this.spriteCache.get(key)!;
     try {
       const base = SPECIES_NAME_1 + (species - 1) * SPECIES_STRIDE - 0x2c;
-      const pic = u32(this.rom, base + 0x58) - 0x08000000, palettePtr = u32(this.rom, base + (shiny ? 0x70 : 0x68)) - 0x08000000;
+      const pic = u32(this.rom, base + (back ? 0x60 : 0x58)) - 0x08000000, palettePtr = u32(this.rom, base + (shiny ? 0x70 : 0x68)) - 0x08000000;
       const tiles = this.lz77(pic), paletteBytes = this.lz77(palettePtr); if (!tiles || !paletteBytes || tiles.length < 2048 || paletteBytes.length < 32) { this.spriteCache.set(key, null); return null; }
       const palette = Array.from({ length: 16 }, (_, i) => { const color = paletteBytes[i * 2] | (paletteBytes[i * 2 + 1] << 8); return [(color & 31) * 255 / 31, ((color >>> 5) & 31) * 255 / 31, ((color >>> 10) & 31) * 255 / 31, i ? 255 : 0]; });
       const pixels = new Uint8ClampedArray(64 * 64 * 4);
@@ -587,6 +671,22 @@ export class SeaglassWebSave {
       }
       const sprite = { width: 64, height: 64, pixels }; this.spriteCache.set(key, sprite); return sprite;
     } catch { this.spriteCache.set(key, null); return null; }
+  }
+  itemSpriteRgba(id: number): SpriteData | null {
+    if (this.itemSpriteCache.has(id)) return this.itemSpriteCache.get(id)!;
+    try {
+      const base = ITEM_BASE + id * ITEM_STRIDE;
+      const pic = u32(this.rom, base + ITEM_ICON_PTR_OFF) - 0x08000000, palettePtr = u32(this.rom, base + ITEM_ICON_PALETTE_PTR_OFF) - 0x08000000;
+      const tiles = this.lz77(pic), paletteBytes = this.lz77(palettePtr);
+      if (!tiles || !paletteBytes || tiles.length < 288 || paletteBytes.length < 32) { this.itemSpriteCache.set(id, null); return null; }
+      const palette = Array.from({ length: 16 }, (_, i) => { const color = paletteBytes[i * 2] | (paletteBytes[i * 2 + 1] << 8); return [(color & 31) * 255 / 31, ((color >>> 5) & 31) * 255 / 31, ((color >>> 10) & 31) * 255 / 31, i ? 255 : 0]; });
+      const pixels = new Uint8ClampedArray(24 * 24 * 4);
+      for (let ty = 0; ty < 3; ty++) for (let tx = 0; tx < 3; tx++) for (let row = 0; row < 8; row++) for (let column = 0; column < 4; column++) {
+        const packed = tiles[(ty * 3 + tx) * 32 + row * 4 + column];
+        for (let half = 0; half < 2; half++) { const color = palette[half ? packed >>> 4 : packed & 15], pixel = ((ty * 8 + row) * 24 + tx * 8 + column * 2 + half) * 4; pixels.set(color, pixel); }
+      }
+      const sprite = { width: 24, height: 24, pixels }; this.itemSpriteCache.set(id, sprite); return sprite;
+    } catch { this.itemSpriteCache.set(id, null); return null; }
   }
 
   addBoxPokemon(index: number, draft: NewPokemon) {
@@ -603,6 +703,9 @@ export class SeaglassWebSave {
     set16(blocks.G, 0, draft.species); set16(blocks.G, 2, draft.heldItem || 0); set32(blocks.G, 4, EMPTY_EXTENDED_NICKNAME | (expAt(this.growthRate(draft.species), Math.max(1, Math.min(100, draft.level))) & EXPERIENCE_MASK));
     blocks.G[8] = Array.from({ length: 4 }, (_, i) => clampInteger(draft.ppUps[i] ?? 0, 0, 3)).reduce((packed, value, i) => packed | (value << (i * 2)), 0);
     blocks.G[9] = clampInteger(draft.friendship, 0, 255);
+    const ball = draft.ball == null ? 1 : clampInteger(draft.ball, 1, 63);
+    if (this.itemPocket(ball) !== 2) throw new Error(`${this.itemName(ball)} is not a Poké Ball.`);
+    set16(blocks.G, 10, ball);
     for (let i = 0; i < 4; i++) { const move = clampInteger(draft.moves[i] ?? 0, 0, 0x7ff); set16(blocks.A, i * 2, move); blocks.A[8 + i] = clampInteger(draft.pp[i] ?? 0, 0, this.moveMaxPp(move, draft.ppUps[i] ?? 0)); }
     for (let i = 0; i < 6; i++) blocks.E[i] = evs[i];
     for (let i = 0; i < 5; i++) blocks.E[6 + i] = clampInteger(draft.contest[i] ?? 0, 0, 255);
